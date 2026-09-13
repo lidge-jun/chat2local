@@ -1,0 +1,20 @@
+{
+  "name": "codex-mcp-server",
+  "version": "1.0.0",
+  "description": "Deployment-ready MCP server for ChatGPT web with Codex tools and fast subagent support",
+  "type": "module",
+  "scripts": {
+    "start": "bun run bin/mcp.ts",
+    "serve": "bun run bin/serve.ts",
+    "setup": "bun run bin/setup.ts",
+    "install": "bun install"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
