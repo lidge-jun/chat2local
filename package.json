@@ -1,7 +1,7 @@
 {
-  "name": "codex-mcp-server",
+  "name": "chat2local",
   "version": "1.0.0",
-  "description": "Deployment-ready MCP server for ChatGPT web with Codex tools and fast subagent support",
+  "description": "ChatGPT web to local machine bridge via official Secure MCP Tunnel - codex exec, aside exec/repl, codex-like tools",
   "type": "module",
   "scripts": {
     "start": "bun run bin/mcp.ts",

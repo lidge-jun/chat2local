@@ -87,7 +87,7 @@ async function handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> 
   if (method === "tools/call") {
     const { name, arguments: args } = params as { name: string; arguments: unknown };
     
-    console.error(`[codex-mcp-server] tools/call name=${name} args=`, JSON.stringify(args));
+    console.error(`[chat2local] tools/call name=${name} args=`, JSON.stringify(args));
     
     if (!tools[name]) {
       return createErrorResponse(id, -32601, `Tool not found: ${name}`);
@@ -118,7 +118,7 @@ async function handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> 
 
 // Main loop
 async function main() {
-  console.error("[codex-mcp-server] Started on stdio");
+  console.error("[chat2local] Started on stdio");
   
   let buffer = "";
   
@@ -138,7 +138,7 @@ async function main() {
         const response = await handleRequest(request);
         console.log(JSON.stringify(response));
       } catch (error) {
-        console.error("[codex-mcp-server] Parse error:", error);
+        console.error("[chat2local] Parse error:", error);
         const errorResponse = createErrorResponse(0, -32700, "Parse error");
         console.log(JSON.stringify(errorResponse));
       }
@@ -146,7 +146,7 @@ async function main() {
   });
 
   process.stdin.on("end", () => {
-    console.error("[codex-mcp-server] stdin closed, exiting");
+    console.error("[chat2local] stdin closed, exiting");
     process.exit(0);
   });
 
@@ -155,6 +155,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("[codex-mcp-server] Fatal error:", error);
+  console.error("[chat2local] Fatal error:", error);
   process.exit(1);
 });

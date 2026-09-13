@@ -1,244 +1,121 @@
-# Codex MCP Server
+# chat2local
 
-Deployment-ready MCP server for ChatGPT web with Codex tools, fast subagent support, and official tunnel-client integration.
+ChatGPT 웹에서 내 로컬 머신을 자유롭게 통제한다. OpenAI 공식 Secure MCP Tunnel만 사용한다. 회색지대 없음.
 
-## Features
+## 뭘 하는가
 
-- **Codex-like Tools**: File operations, shell execution, code search
-- **Fast Subagent Spawning**: Parallel task execution with unlimited subagents
-- **Code Mode**: Analyze, refactor, test, document, and debug operations
-- **Easy Onboarding**: One-command setup with automatic tunnel configuration
-- **Official Integration**: Uses OpenAI's Secure MCP Tunnel (no gray zones)
-- **Persistent**: Launchd service keeps server running across reboots
+ChatGPT 웹 커넥터(`@chat2local`)로 로컬 도구를 호출한다.
 
-## Quick Start
+```
+@chat2local codex_exec "이 리포 테스트 고쳐줘"
+@chat2local spawn_subagent "GitHub 트렌딩 스크랩해서 정리해줘"
+@chat2local aside_repl "const p = await openTab('https://example.com'); console.log(await p.title())"
+@chat2local exec_command "git status"
+@chat2local grep "TODO" src/
+```
 
-### 1. Prerequisites
+## 도구
 
-- macOS (for launchd integration)
-- [Bun](https://bun.sh) installed
-- OpenAI API key with tunnel permissions
+| 도구 | 백엔드 | 용도 |
+|------|--------|------|
+| `codex_exec` | codex CLI (`codex exec`, ocx 프록시 필요) | 코드 작업, 리포 탐색, 패치 |
+| `spawn_subagent` | `aside exec` | 브라우저 에이전트 작업 |
+| `aside_repl` | `aside repl` | Playwright JS 직접 실행 |
+| `exec_command` | `/bin/zsh -lc` | 일반 셸 명령 |
+| `read_file` / `write_file` | fs | 파일 읽기/쓰기 |
+| `list_dir` / `grep` / `glob` | fs/grep/find | 탐색 |
 
-### 2. Setup
+### 전제
+
+- **Bun** (`~/.bun/bin/bun`)
+- **Aside CLI** (`~/.local/bin/aside`, 로그인됨) - spawn_subagent, aside_repl용
+- **codex CLI** (`npm i -g @openai/codex`) + **ocx 프록시** (`ocx service`, 127.0.0.1:10100) - codex_exec용
+- **OpenAI API 키** (Platform org, Tunnels Read+Manage/Use 권한)
+- **ChatGPT Pro 이상** + Developer mode
+
+codex 바이너리 경로는 `src/tools.ts`의 `CODEX_BINARY`에 하드코딩되어 있다. nvm Node 버전이 바뀌면 갱신한다.
+
+## 설치
 
 ```bash
-# Clone the repository
-git clone <your-repo-url> codex-mcp-server
-cd codex-mcp-server
+git clone <repo> chat2local
+cd chat2local
+bun install
 
-# Run setup (installs dependencies, tunnel-client, launchd service)
-bun run bin/setup.ts --api-key "your-openai-api-key" --connector-name "Codex MCP"
+# tunnel-client 다운로드 + 프로필 + launchd 등록
+bun run bin/setup.ts --api-key "sk-..." --connector-name "chat2local"
 ```
 
-### 3. Configure ChatGPT
+setup이 하는 것:
+1. `~/.chat2local/bin/tunnel-client` 다운로드 + quarantine 제거
+2. `~/.chat2local/tunnel/profiles/chat2local.yaml` 생성 (runtime_command = `bun bin/mcp.ts`)
+3. `~/Library/LaunchAgents/com.chat2local.plist` 등록 (RunAtLoad + KeepAlive) - 재부팅필도 살아남음
 
-1. Open https://chatgpt.com
-2. Go to **Settings → Security and login → Enable Developer Mode**
-3. Go to **Plugins → Create new developer mode app**:
-   - Name: `Codex MCP`
-   - Connection type: **Tunnel**
-   - Select your tunnel from the list
-4. Set permissions: **Allow all actions** (or configure specific tools)
+## ChatGPT 연결
 
-### 4. Use in ChatGPT
+1. Platform에서 터널 생성: https://platform.openai.com/settings/organization/tunnels
+2. chatgpt.com → Settings → Security and login → Developer mode ON
+3. https://chatgpt.com/plugins → + → developer-mode app:
+   - Name: `chat2local` (정확히)
+   - Connection: Tunnel → 만든 터널 선택
+   - Auth: No Authentication
+   - Permissions: Allow all actions (또는 도구별 제한)
+4. 대화에서 `@chat2local` 멘션
 
-```
-@Codex MCP list_dir .
-@Codex MCP read_file package.json
-@Codex MCP exec_command "git status"
-@Codex MCP grep "function" src/
-@Codex MCP spawn_subagent "analyze this codebase"
-```
+**중요**: Platform org와 ChatGPT 워크스페이스가 같은 계정이어야 터널이 커넥터 폼에 뜬다.
 
-## Available Tools
-
-### File Operations
-
-- `read_file` - Read file contents
-- `write_file` - Write file contents
-- `list_dir` - List directory contents
-
-### Command Execution
-
-- `exec_command` - Execute shell commands
-
-### Search
-
-- `grep` - Search for patterns in files
-- `glob` - Find files matching patterns
-
-### Subagent Spawning
-
-- `spawn_subagent` - Spawn fast subagents for parallel tasks
-
-### Code Operations
-
-- `code_mode` - Analyze, refactor, test, document, debug
-
-## Configuration
-
-### Environment Variables
-
-- `CODEX_MCP_WORKSPACE` - Default workspace directory (default: `~/developer/new/700_projects`)
-- `OPENAI_API_KEY` - OpenAI API key (required)
-
-### Config Directory
-
-All configuration is stored in `~/.codex-mcp-server/`:
-
-- `bin/tunnel-client` - Tunnel client binary
-- `tunnel/profiles/codex-mcp-server.yaml` - Tunnel profile
-- `logs/` - Log files
-
-## Management
-
-### Start/Stop Service
+## 관리
 
 ```bash
-# Start
-launchctl load ~/Library/LaunchAgents/com.codex-mcp-server.plist
+# 상태
+launchctl list | grep chat2local
+~/.chat2local/bin/tunnel-client runtimes status chat2local --json
 
-# Stop
-launchctl unload ~/Library/LaunchAgents/com.codex-mcp-server.plist
+# 로그
+tail -f ~/.chat2local/logs/tunnel.stdout.log
+tail -f ~/.chat2local/logs/tunnel.stderr.log
 
-# Restart
-launchctl unload ~/Library/LaunchAgents/com.codex-mcp-server.plist
-launchctl load ~/Library/LaunchAgents/com.codex-mcp-server.plist
+# 재시작
+launchctl kickstart -k gui/$(id -u)/com.chat2local
+
+# 제거
+launchctl bootout gui/$(id -u)/com.chat2local
+rm ~/Library/LaunchAgents/com.chat2local.plist
+rm -rf ~/.chat2local
 ```
 
-### View Logs
+## 로컬 테스트 (터널 없이)
 
 ```bash
-tail -f ~/.codex-mcp-server/logs/tunnel.stdout.log
-tail -f ~/.codex-mcp-server/logs/tunnel.stderr.log
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | bun run bin/mcp.ts
+
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"codex_exec","arguments":{"prompt":"echo hi"}}}' | bun run bin/mcp.ts
 ```
 
-### Check Status
-
-```bash
-~/.codex-mcp-server/bin/tunnel-client runtimes status codex-mcp-server
-```
-
-## Development
-
-### Run Locally (without tunnel)
-
-```bash
-bun run bin/mcp.ts --stdio
-```
-
-### Test Tools
-
-```bash
-# Test read_file
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"package.json"}}}' | bun run bin/mcp.ts --stdio
-
-# Test exec_command
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_command","arguments":{"command":"ls -la"}}}' | bun run bin/mcp.ts --stdio
-```
-
-## Architecture
+## 구조
 
 ```
-┌─────────────┐
-│ ChatGPT Web │
-└──────┬──────┘
-       │ MCP Protocol
-       ▼
-┌──────────────────┐
-│ OpenAI Tunnel    │
-│ Service          │
-└──────┬───────────┘
-       │ HTTPS
-       ▼
-┌──────────────────┐
-│ tunnel-client    │
-│ (local)          │
-└──────┬───────────┘
-       │ stdio
-       ▼
-┌──────────────────┐
-│ Codex MCP Server │
-│ (this project)   │
-└──────┬───────────┘
-       │
-       ▼
-┌──────────────────┐
-│ Local Filesystem │
-│ Shell Commands   │
-│ Subagents        │
-└──────────────────┘
+chat2local/
+├── bin/
+│   ├── mcp.ts      # stdio JSON-RPC MCP 서버
+│   └── setup.ts    # 원커맨드 온볼딩
+└── src/
+    └── tools.ts    # 도구 구현 (codex/aside/fs/shell)
 ```
 
-## Security
-
-- Uses OpenAI's official Secure MCP Tunnel (no public endpoints)
-- All communication over HTTPS
-- Workspace is sandboxed to configured directory
-- Launchd service runs with user permissions
-- API key stored in local profile only
-
-## Troubleshooting
-
-### Server not responding
-
-```bash
-# Check if service is running
-launchctl list | grep codex-mcp-server
-
-# Check logs
-tail -50 ~/.codex-mcp-server/logs/tunnel.stderr.log
-
-# Restart service
-launchctl unload ~/Library/LaunchAgents/com.codex-mcp-server.plist
-launchctl load ~/Library/LaunchAgents/com.codex-mcp-server.plist
+```
+ChatGPT 웹 --MCP--> OpenAI 터널 서비스 --HTTPS--> tunnel-client (로컬)
+                                                      |
+                                                     stdio
+                                                      |
+                                                  bin/mcp.ts
+                                                   |   |   |
+                                              codex  aside  셸/fs
 ```
 
-### Tunnel not connecting
+## 보안
 
-```bash
-# Check tunnel status
-~/.codex-mcp-server/bin/tunnel-client runtimes status codex-mcp-server
-
-# Verify API key
-cat ~/.codex-mcp-server/tunnel/profiles/codex-mcp-server.yaml
-
-# Test tunnel manually
-~/.codex-mcp-server/bin/tunnel-client run --profile ~/.codex-mcp-server/tunnel/profiles/codex-mcp-server.yaml
-```
-
-### Permission errors
-
-```bash
-# Remove quarantine attributes
-xattr -cr ~/.codex-mcp-server/bin/tunnel-client
-xattr -cr ~/Library/LaunchAgents/com.codex-mcp-server.plist
-
-# Fix permissions
-chmod +x ~/.codex-mcp-server/bin/tunnel-client
-```
-
-## Uninstall
-
-```bash
-# Stop and remove service
-launchctl unload ~/Library/LaunchAgents/com.codex-mcp-server.plist
-rm ~/Library/LaunchAgents/com.codex-mcp-server.plist
-
-# Remove config directory
-rm -rf ~/.codex-mcp-server
-
-# Remove project
-cd ..
-rm -rf codex-mcp-server
-```
-
-## References
-
-- [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
-- [ChatGPT Developer Mode](https://platform.openai.com/docs/guides/developer-mode)
-- [Model Context Protocol](https://modelcontextprotocol.io)
-
-## License
-
-MIT
+- 아웃바운드 전용 터널. 공개 포트 없음.
+- 터널 런타임 키는 `~/.chat2local/tunnel/` 로컬에만.
+- ChatGPT 대화 내용(도구 결과 포함)은 OpenAI로 간다. 비밀 파일을 읽게 하지 마라.
+- Allow all actions는 ChatGPT가 로컬 셸을 만진다는 뜻이다. 인젝션 주의.

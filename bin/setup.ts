@@ -10,8 +10,8 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 const PROJECT_ROOT = resolve(process.cwd(), "..");
-const CONFIG_DIR = join(homedir(), ".codex-mcp-server");
-const TUNNEL_PROFILE_NAME = "codex-mcp-server";
+const CONFIG_DIR = join(homedir(), ".chat2local");
+const TUNNEL_PROFILE_NAME = "chat2local";
 
 interface SetupConfig {
   workspace?: string;
@@ -117,7 +117,7 @@ env:
 function installLaunchdService(): void {
   log("Installing launchd service...");
   
-  const plistPath = join(homedir(), "Library", "LaunchAgents", "com.codex-mcp-server.plist");
+  const plistPath = join(homedir(), "Library", "LaunchAgents", "com.chat2local.plist");
   const binPath = join(CONFIG_DIR, "bin", "tunnel-client");
   const profilePath = join(CONFIG_DIR, "tunnel", "profiles", `${TUNNEL_PROFILE_NAME}.yaml`);
   
@@ -126,7 +126,7 @@ function installLaunchdService(): void {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.codex-mcp-server</string>
+  <string>com.chat2local</string>
   <key>ProgramArguments</key>
   <array>
     <string>${binPath}</string>
@@ -201,8 +201,8 @@ Configuration:
 - Logs: ${join(CONFIG_DIR, "logs")}
 
 To uninstall:
-  launchctl unload ~/Library/LaunchAgents/com.codex-mcp-server.plist
-  rm ~/Library/LaunchAgents/com.codex-mcp-server.plist
+  launchctl unload ~/Library/LaunchAgents/com.chat2local.plist
+  rm ~/Library/LaunchAgents/com.chat2local.plist
   rm -rf ${CONFIG_DIR}
 
 Documentation: https://github.com/openai/tunnel-client
