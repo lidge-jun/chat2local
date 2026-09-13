@@ -13,6 +13,8 @@ import {
   globSchema,
   spawnSubagentSchema,
   codeModeSchema,
+  asideReplSchema,
+  codexExecSchema,
   readFileTool,
   writeFileTool,
   listDirTool,
@@ -21,6 +23,8 @@ import {
   globTool,
   spawnSubagentTool,
   codeModeTool,
+  asideReplTool,
+  codexExecTool,
 } from "../src/tools.js";
 
 interface JsonRpcRequest {
@@ -48,8 +52,10 @@ const tools: Record<string, { schema: unknown; handler: (input: any) => Promise<
   exec_command: { schema: execCommandSchema, handler: execCommandTool, description: "Execute a shell command in the workspace" },
   grep: { schema: grepSchema, handler: grepTool, description: "Search for a pattern in files" },
   glob: { schema: globSchema, handler: globTool, description: "Find files matching a glob pattern" },
-  spawn_subagent: { schema: spawnSubagentSchema, handler: spawnSubagentTool, description: "Spawn a fast subagent to handle a task in parallel" },
+  spawn_subagent: { schema: spawnSubagentSchema, handler: spawnSubagentTool, description: "Spawn an aside exec subagent for browser tasks" },
   code_mode: { schema: codeModeSchema, handler: codeModeTool, description: "Perform code operations (analyze, refactor, test, document, debug)" },
+  aside_repl: { schema: asideReplSchema, handler: asideReplTool, description: "Run Playwright-style JavaScript in Aside Browser" },
+  codex_exec: { schema: codexExecSchema, handler: codexExecTool, description: "Run codex exec non-interactively for code tasks" },
 };
 
 function createResponse(id: string | number, result: unknown): JsonRpcResponse {
@@ -80,6 +86,8 @@ async function handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> 
   // Call tool
   if (method === "tools/call") {
     const { name, arguments: args } = params as { name: string; arguments: unknown };
+    
+    console.error(`[codex-mcp-server] tools/call name=${name} args=`, JSON.stringify(args));
     
     if (!tools[name]) {
       return createErrorResponse(id, -32601, `Tool not found: ${name}`);

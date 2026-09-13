@@ -28,6 +28,7 @@ export const MAX_READ_BYTES = 256 * 1024;
 export const MAX_EXEC_BYTES = 256 * 1024;
 export const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 120_000;
+const CODEX_BINARY = "/Users/jun/.nvm/versions/node/v24.17.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex";
 
 // Tool schemas
 export const readFileSchema = z.object({
@@ -69,10 +70,27 @@ export const globSchema = z.object({
 });
 
 export const spawnSubagentSchema = z.object({
-  prompt: z.string().describe("Prompt/instructions for the subagent"),
-  model: z.enum(["fast", "standard", "deep"]).default("fast").describe("Model tier to use"),
-  workdir: z.string().optional().describe("Working directory for the subagent"),
+  prompt: z.string().describe("Task prompt for the subagent"),
+  model: z.string().optional().describe("Model id (e.g. openai/gpt-5.6-sol) or provider/model"),
+  speed: z.enum(["default", "fast"]).default("fast").describe("Model speed"),
+  effort: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultrabrowse"]).optional().describe("Thinking effort"),
+  permission: z.enum(["ask", "guard", "full-access"]).default("guard").describe("Session permission"),
   timeout: z.number().int().min(1000).max(DEFAULT_SUBAGENT_TIMEOUT_MS * 5).default(DEFAULT_SUBAGENT_TIMEOUT_MS).describe("Timeout in milliseconds"),
+  env: z.record(z.string()).optional().describe("Environment variables"),
+});
+
+export const asideReplSchema = z.object({
+  code: z.string().describe("Playwright-style JavaScript to run in Aside Browser"),
+  account: z.string().optional().describe("Aside account id (e.g. u0)"),
+  host: z.string().optional().describe("Session host: 'local' or remote host id"),
+});
+
+export const codexExecSchema = z.object({
+  prompt: z.string().describe("Task prompt for codex exec"),
+  model: z.string().optional().describe("Model override (e.g. o3, gpt-5.6-sol)"),
+  sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).default("workspace-write").describe("Sandbox mode"),
+  cwd: z.string().optional().describe("Working directory (defaults to workspace)"),
+  timeout: z.number().int().min(1000).max(600_000).default(300_000).describe("Timeout in milliseconds"),
   env: z.record(z.string()).optional().describe("Environment variables"),
 });
 
@@ -228,43 +246,82 @@ export async function globTool(input: z.infer<typeof globSchema>): Promise<strin
 
 export async function spawnSubagentTool(input: z.infer<typeof spawnSubagentSchema>): Promise<SubagentResult> {
   const startTime = Date.now();
-  const workdir = input.workdir ? resolvePath(input.workdir) : DEFAULT_WORKSPACE;
   const agentId = `agent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
-  // Use codex CLI if available, otherwise fallback to direct execution
-  const useCodex = await checkCodexAvailable();
-  
-  if (useCodex) {
-    return runCodexSubagent(input, workdir, agentId, startTime);
-  }
-  
-  // Fallback: execute prompt directly via shell
-  return runShellSubagent(input, workdir, agentId, startTime);
+  // Use aside exec for real subagent spawning
+  return runAsideSubagent(input, agentId, startTime);
 }
 
-async function checkCodexAvailable(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const proc = spawn("/bin/zsh", ["-lc", "which codex"], { timeout: 5000 });
-    proc.on("close", (code) => resolve(code === 0));
+export async function codexExecTool(input: Partial<z.infer<typeof codexExecSchema>> & { prompt: string }): Promise<{ output: string; exitCode: number; sessionId?: string }> {
+  const sandbox = input.sandbox || "workspace-write";
+  // Check if ocx proxy is running (codex needs it for API access)
+  const ocxRunning = await new Promise<boolean>((resolve) => {
+    const proc = spawn("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:10100/health"], { timeout: 3000 });
+    let output = "";
+    proc.stdout?.on("data", (data) => { output += data.toString(); });
+    proc.on("close", () => resolve(output.trim() === "200"));
     proc.on("error", () => resolve(false));
+  });
+  
+  if (!ocxRunning) {
+    return {
+      output: "Error: ocx proxy not running on 127.0.0.1:10100. Start it with 'ocx start' or 'ocx service' first.",
+      exitCode: 1,
+    };
+  }
+  
+  return new Promise((resolve, reject) => {
+    const args = ["exec"];
+    
+    if (input.model) args.push("-m", input.model);
+    args.push("-s", sandbox);
+    args.push(input.prompt);
+    
+    const proc = spawn(CODEX_BINARY, args, {
+      cwd: input.cwd || DEFAULT_WORKSPACE,
+      env: { ...process.env, ...input.env },
+      timeout: input.timeout,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    
+    // Close stdin immediately so codex doesn't wait for more input
+    proc.stdin?.end();
+    
+    let stdout = "";
+    let stderr = "";
+    
+    proc.stdout?.on("data", (data) => { stdout += data.toString(); });
+    proc.stderr?.on("data", (data) => { stderr += data.toString(); });
+    
+    proc.on("close", (code) => {
+      resolve({
+        output: stdout || stderr,
+        exitCode: code ?? 0,
+      });
+    });
+    
+    proc.on("error", (err) => {
+      reject(new Error(`codex exec failed: ${err.message}`));
+    });
   });
 }
 
-async function runCodexSubagent(
+async function runAsideSubagent(
   input: z.infer<typeof spawnSubagentSchema>,
-  workdir: string,
   agentId: string,
   startTime: number
 ): Promise<SubagentResult> {
   return new Promise((resolve, reject) => {
-    const args = [
-      "--model", input.model,
-      "--prompt", input.prompt,
-      "--workdir", workdir,
-    ];
+    const args = ["exec"];
     
-    const proc = spawn("codex", args, {
-      cwd: workdir,
+    if (input.model) args.push("-m", input.model);
+    if (input.speed) args.push("-s", input.speed);
+    if (input.effort) args.push("--effort", input.effort);
+    if (input.permission) args.push("--permission", input.permission);
+    
+    args.push(input.prompt);
+    
+    const proc = spawn("aside", args, {
       env: { ...process.env, ...input.env, SUBAGENT_ID: agentId },
       timeout: input.timeout,
     });
@@ -284,22 +341,23 @@ async function runCodexSubagent(
       });
     });
     
-    proc.on("error", reject);
+    proc.on("error", (err) => {
+      reject(new Error(`aside exec failed: ${err.message}`));
+    });
   });
 }
 
-async function runShellSubagent(
-  input: z.infer<typeof spawnSubagentSchema>,
-  workdir: string,
-  agentId: string,
-  startTime: number
-): Promise<SubagentResult> {
+export async function asideReplTool(input: z.infer<typeof asideReplSchema>): Promise<{ output: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
-    // Execute as shell command for testing
-    const proc = spawn("/bin/zsh", ["-lc", `echo "Subagent would execute: ${input.prompt.replace(/"/g, '\\"')}"`], {
-      cwd: workdir,
-      env: { ...process.env, ...input.env },
-      timeout: input.timeout,
+    const args = ["repl"];
+    
+    if (input.account) args.push("--account", input.account);
+    if (input.host) args.push("--host", input.host);
+    
+    args.push(input.code);
+    
+    const proc = spawn("aside", args, {
+      timeout: 60_000,
     });
     
     let stdout = "";
@@ -312,12 +370,12 @@ async function runShellSubagent(
       resolve({
         output: stdout || stderr,
         exitCode: code ?? 0,
-        agentId,
-        duration: Date.now() - startTime,
       });
     });
     
-    proc.on("error", reject);
+    proc.on("error", (err) => {
+      reject(new Error(`aside repl failed: ${err.message}`));
+    });
   });
 }
 
