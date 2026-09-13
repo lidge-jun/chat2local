@@ -1,0 +1,4 @@
+node_modules/
+.codexclaw/
+*.log
+.DS_Store
