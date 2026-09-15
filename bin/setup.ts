@@ -27,7 +27,8 @@ export async function setup(argv: string[]) {
   // Bun executes this source; the path is anchored to this script rather than caller cwd.
   const contents = '#!/bin/sh\nset -eu\n'
     + `export CHAT2LOCAL_WORKSPACE=${quote(workspace)}\n`
-    + '# Set operator-owned CHAT2LOCAL_ALLOW_WRITE / CHAT2LOCAL_WORKER_IMAGE in the service environment.\n'
+    + '# Personal defaults: writes and Aside enabled. Set CHAT2LOCAL_ALLOW_WRITE=0 / CHAT2LOCAL_ALLOW_ASIDE=0 to disable.\n'
+    + '# Code mode still requires a provisioned CHAT2LOCAL_WORKER_IMAGE; there is no host fallback.\n'
     + `exec ${quote(process.execPath)} ${quote(entryPath)}\n`;
   const id = values['tunnel-id'];
   if (id && !/^tunnel_[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid tunnel ID');

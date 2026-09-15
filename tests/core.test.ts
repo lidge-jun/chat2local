@@ -20,11 +20,25 @@ async function fixture(t: any, writable = false) {
 }
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-test('operator config defaults are read-only and have no execution image', () => {
+test('personal defaults enable writes and native Aside without enabling host code execution', () => {
   const config = loadConfig({});
-  assert.equal(config.allowWrite, false); assert.equal(config.allowAside, false); assert.equal(config.workerImage, undefined);
-  assert.equal(loadConfig({ CHAT2LOCAL_ALLOW_WRITE: 'true' }).allowWrite, false);
+  assert.equal(config.allowWrite, true); assert.equal(config.allowAside, true);
+  assert.equal(config.asidePermission, 'full-access'); assert.equal(config.workerImage, undefined);
+});
+
+test('explicit operator restrictions override personal defaults', () => {
+  const config = loadConfig({ CHAT2LOCAL_ALLOW_WRITE: '0', CHAT2LOCAL_ALLOW_ASIDE: '0', CHAT2LOCAL_ASIDE_PERMISSION: 'guard' });
+  assert.equal(config.allowWrite, false); assert.equal(config.allowAside, false); assert.equal(config.asidePermission, 'guard');
   assert.equal(loadConfig({ CHAT2LOCAL_ALLOW_WRITE: '1' }).allowWrite, true);
+  assert.equal(loadConfig({ CHAT2LOCAL_ALLOW_ASIDE: '1' }).allowAside, true);
+});
+
+test('ambiguous permissions fail startup instead of silently escalating privileges', () => {
+  for (const key of ['CHAT2LOCAL_ALLOW_WRITE', 'CHAT2LOCAL_ALLOW_ASIDE']) {
+    for (const value of ['', 'true', 'false', 'yes', 'no', '2'])
+      assert.throws(() => loadConfig({ [key]: value }), /must be 0 or 1/);
+  }
+  assert.throws(() => loadConfig({ CHAT2LOCAL_ASIDE_PERMISSION: 'ask' }), /must be guard or full-access/);
 });
 
 test('bounded reads apply byte defaults and hash the full file', async t => {

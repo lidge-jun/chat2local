@@ -4,3 +4,4 @@ dist/
 .chat2local-local/
 *.log
 .DS_Store
+release/

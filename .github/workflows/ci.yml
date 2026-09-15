@@ -31,3 +31,29 @@ jobs:
           CHAT2LOCAL_DOCKER_TESTS: '1'
           CHAT2LOCAL_TEST_IMAGE: node:22-alpine
         run: node --test dist/tests/docker.test.js
+      - name: Build standalone runtime in hosted CI only
+        run: bun run bundle
+      - name: Standalone bundle protocol and personal-default tests
+        env:
+          CHAT2LOCAL_BUNDLE_TESTS: '1'
+        run: node --test dist/tests/bundle.test.js
+      - name: Record bundle provenance and checksums
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const file = 'chat2local.mjs';
+          const content = readFileSync('release/' + file);
+          const sha256 = createHash('sha256').update(content).digest('hex');
+          const manifest = { source_commit: process.env.GITHUB_SHA,
+            version: JSON.parse(readFileSync('package.json', 'utf8')).version,
+            runtime: 'bun', files: [{ path: file, bytes: content.length, sha256 }] };
+          writeFileSync('release/manifest.json', JSON.stringify(manifest, null, 2) + '\n');
+          writeFileSync('release/SHA256SUMS', sha256 + '  ' + file + '\n');
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chat2local-runtime-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14

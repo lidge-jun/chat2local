@@ -9,6 +9,21 @@ export interface Config {
   dockerBinary: string;
   workerImage?: string;
   asideBinary: string;
+  asidePermission: 'guard' | 'full-access';
+}
+
+/** Personal defaults are intentional; explicit operator restrictions always win. */
+function enabled(env: NodeJS.ProcessEnv, key: string): boolean {
+  const value = env[key];
+  if (value === undefined || value === '1') return true;
+  if (value === '0') return false;
+  throw new Error(`${key} must be 0 or 1; refusing an ambiguous permission value`);
+}
+
+function nativePermission(value: string | undefined): 'guard' | 'full-access' {
+  if (value === undefined || value === 'full-access') return 'full-access';
+  if (value === 'guard') return 'guard';
+  throw new Error('CHAT2LOCAL_ASIDE_PERMISSION must be guard or full-access');
 }
 
 /** Only the operator's environment controls privileges, never tool arguments. */
@@ -17,11 +32,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     workspace,
     stateDir: resolve(env.CHAT2LOCAL_STATE_DIR || join(homedir(), '.chat2local', 'state')),
-    allowWrite: env.CHAT2LOCAL_ALLOW_WRITE === '1',
-    allowAside: env.CHAT2LOCAL_ALLOW_ASIDE === '1',
+    allowWrite: enabled(env, 'CHAT2LOCAL_ALLOW_WRITE'),
+    allowAside: enabled(env, 'CHAT2LOCAL_ALLOW_ASIDE'),
     dockerBinary: env.CHAT2LOCAL_DOCKER_BINARY || 'docker',
     workerImage: env.CHAT2LOCAL_WORKER_IMAGE || undefined,
     asideBinary: env.CHAT2LOCAL_ASIDE_BINARY || 'aside',
+    asidePermission: nativePermission(env.CHAT2LOCAL_ASIDE_PERMISSION),
   };
 }
 

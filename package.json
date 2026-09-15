@@ -1,6 +1,6 @@
 {
   "name": "chat2local",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Chat-first local workbench: scoped file tools, disposable code-mode workers, resumable jobs and optional Aside",
   "type": "module",
   "scripts": {
@@ -8,7 +8,8 @@
     "setup": "bun run bin/setup.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test dist/tests/*.test.js"
+    "test": "node --test dist/tests/*.test.js",
+    "bundle": "bun build bin/mcp.ts --target=bun --outfile release/chat2local.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

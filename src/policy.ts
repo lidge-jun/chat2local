@@ -97,7 +97,7 @@ export class Workspace {
   write(path: string, content: string, expected: string, signal?: AbortSignal) {
     const operation = Workspace.queue.then(async () => {
       if (signal?.aborted) throw new PolicyError('Write cancelled before execution');
-      if (!this.writable) throw new PolicyError('Writes disabled by operator; CHAT2LOCAL_ALLOW_WRITE=1 is required');
+      if (!this.writable) throw new PolicyError('Writes disabled by operator; set CHAT2LOCAL_ALLOW_WRITE=1 to re-enable');
       if (Buffer.byteLength(content) > LIMITS.fileBytes) throw new PolicyError('Write exceeds file limit');
       const target = await this.path(path, true);
       if (target === this.root) throw new PolicyError('Cannot replace workspace root');

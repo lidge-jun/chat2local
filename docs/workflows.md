@@ -56,7 +56,7 @@ return summaries;
 
 읽기 전용 코드에서 `write_file`이나 `aside_native`를 호출하면 서버 쪽에서 거부한다. JavaScript의 전역 객체를 변형하거나 stdout으로 요청을 직접 보내더라도 서버의 허용 도구와 세션 검사를 생략할 수 없다. 코드 워커의 JavaScript 언어 자체를 보안 샌드박스로 취급하지 않는다.
 
-쓰기 배치는 `code_mode`를 사용한다. 운영자의 쓰기 설정과 사용자의 해당 작업 승인이 전제다.
+쓰기 배치는 `code_mode`를 사용한다. 개인용 기본값에서 쓰기는 켜져 있지만, 사용자의 해당 작업 승인은 여전히 전제다. 운영자가 `CHAT2LOCAL_ALLOW_WRITE=0`으로 끈 경우 배치에서도 파일 쓰기를 할 수 없다.
 
 ```javascript
 const file = await tools.call('read_file', { path: 'src/example.ts' });

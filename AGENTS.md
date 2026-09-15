@@ -1,5 +1,6 @@
 # chat2local agent rules
 
+- Personal defaults enable file writes and native Aside; delegated Aside sessions use full-access. Honor operator disable switches and user task scope. Never mistake these defaults for a sandbox.
 - Treat ChatGPT as the planner; batch execution is not a nested coding agent.
 - Never run install, build, typecheck, tests, generated JavaScript, or shell probes on a connected personal/dogfooding host. Validate in an isolated environment or hosted CI.
 - Never read or change real authentication files, browser profiles, keychains, service configuration, or credentials. A new worktree or HOME variable is not a sandbox.

@@ -49,6 +49,7 @@ export class Runtime {
     return { host_shell: false, write_enabled: this.config.allowWrite,
       code_mode_configured: Boolean(this.config.workerImage), worker_image: this.config.workerImage || null,
       native_aside_enabled: this.config.allowAside, native_aside_is_sandboxed: false,
+      native_aside_permission: this.config.asidePermission, operator_mode: 'personal',
       isolated_commands: 'Filtered snapshot, network disabled, no copy-back; dependencies must already be in the image',
       batch_read_tools: batchReads, batch_write_tools: batchWrites.filter(t => t === 'write_file' ? this.config.allowWrite : this.config.allowAside),
       code_api: ['await tools.list()', 'await tools.call(name, args)', 'await tools.map(items, async (item, index) => ..., concurrency)'],
@@ -108,7 +109,7 @@ export class Runtime {
         argv.push(args.code);
       }
       if (name === 'spawn_subagent') {
-        argv = ['exec', '--permission', 'guard']; if (args.model) argv.push('-m', args.model); argv.push(args.prompt);
+        argv = ['exec', '--permission', this.config.asidePermission]; if (args.model) argv.push('-m', args.model); argv.push(args.prompt);
       }
       return this.jobs.start(record.id, args.request_id, name, ctxInput, ctx => this.native(argv, args.timeout, workspace, ctx));
     }

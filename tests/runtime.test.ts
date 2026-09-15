@@ -11,7 +11,7 @@ import { setup, PROJECT_ROOT } from '../bin/setup.js';
 async function fixture(t: any, writable = false) {
   const base = await mkdtemp(join(tmpdir(), 'chat2local-runtime-'));
   const root = join(base, 'project'); await mkdir(root); await writeFile(join(root, 'a.ts'), 'const answer = 42;\n');
-  const runtime = await Runtime.create({ ...loadConfig({}), workspace: root, stateDir: join(base, 'state'), allowWrite: writable });
+  const runtime = await Runtime.create({ ...loadConfig({}), workspace: root, stateDir: join(base, 'state'), allowWrite: writable, allowAside: false });
   t.after(async () => { await runtime.close(); await rm(base, { recursive: true, force: true }); });
   const open = await runtime.invoke('session_open', {}) as any;
   return { runtime, root, base, session_id: open.session.id };

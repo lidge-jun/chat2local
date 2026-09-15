@@ -26,7 +26,7 @@ interface DynamicToolRegistry {
 }
 
 export function createServer(runtime: Runtime) {
-  const server = new McpServer({ name: 'chat2local', version: '1.1.0' }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: 'chat2local', version: '1.2.0' }, { instructions: INSTRUCTIONS });
   const registry = server as unknown as DynamicToolRegistry;
   const active = new Set<Promise<unknown>>();
   let draining = false;

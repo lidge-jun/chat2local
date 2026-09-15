@@ -15,7 +15,7 @@ chat2local — 세션 · 검증 · 권한 · 작업 기록
        └─ 선택적 Aside 네이티브 / REPL / 독립 서브에이전트
 ```
 
-**안전 기본값:** 파일 읽기만 활성화된다. 쓰기는 운영자 설정이 필요하고, 코드·셸 실행은 운영자가 미리 준비한 Docker 이미지 없이는 실패한다. Aside는 별도의 **권한이 큰 호스트 어댑터**이며 기본적으로 꺼져 있다. 이 저장소를 업데이트하는 것만으로 기존 터널·서비스·인증 파일은 변경되지 않는다.
+**개인용 기본값:** 파일 쓰기와 Aside가 처음부터 활성화된다. Aside 서브에이전트도 기본 `full-access`이며, 별도의 **권한이 큰 호스트 어댑터**다. 코드·셸 실행은 여전히 운영자가 미리 준비한 Docker 이미지 없이는 실패한다. 읽기 전용으로 제한하려면 `CHAT2LOCAL_ALLOW_WRITE=0`과 `CHAT2LOCAL_ALLOW_ASIDE=0`을 명시한다. 이 저장소를 업데이트하는 것만으로 기존 터널·서비스·인증 파일은 변경되지 않는다.
 
 Secure MCP Tunnel의 연결 방식과 제공 범위는 OpenAI의 공식 문서를 확인한다. 터널이 있다고 해서 로컬 코드가 자동으로 격리되거나, 공개 배포 심사가 완료되는 것은 아니다.
 
@@ -36,7 +36,13 @@ Bun, Node.js 22 이상, 읽어도 되는 소스 전용 프로젝트 폴더를 �
 
 이미 로그인된 Mac에 소스만 갱신한 경우에는 위 명령을 자동 실행하지 않는다. 기존 런타임에 새 의존성이 설치되어 있는지, 어디에서 설치·실행을 검증할지는 운영자가 결정한다. 이번 버전은 새로운 패키지 의존성을 추가하지 않는다.
 
-### 읽기 전용으로 시작
+### 로그인된 개인 Mac에는 CI 번들로 배포
+
+개인 Mac에서 의존성 install/build를 반복하지 않도록 CI가 `chat2local-runtime-<commit>` 산출물을 만든다. `chat2local.mjs`, `manifest.json`, `SHA256SUMS`가 들어 있고, 별도의 `node_modules` 없이 기존 Bun으로 실행한다. CI에서 실제 MCP 초기화·파일 읽기·쓰기와 명시적 비활성화 설정을 검사한다. 이 번들 검사는 Aside/Docker를 실행하거나 ChatGPT에 연결하는 테스트는 아니다.
+
+성공한 CI의 산출물을 새 버전 폴더에 받아 manifest의 `source_commit`과 SHA-256을 확인한다. 터널 runtime command는 기존 Bun의 절대 경로와 이 번들의 절대 경로로 지정한다. 미리 설치된 Bun은 필요하며, 계정 로그인·전용 터널·개발자 앱 등록은 별도 절차다. 기존 Native2 터널을 새 앱에 재사용하거나 덮어쓰지 않는다.
+
+### 개인용 기본값으로 시작
 
 ```bash
 export CHAT2LOCAL_WORKSPACE=/absolute/path/to/source-project
@@ -58,23 +64,24 @@ bun run start
 
 코드 모드 컨테이너에는 호스트 파일시스템·Docker 소켓·인증 파일을 마운트하지 않는다. 네트워크도 비활성화한다. 파일 접근은 서버 쪽의 제한된 도구 호출로만 제공된다. 단, 컨테이너를 무결점 보안 경계라고 주장하지 않는다. 위협 모델과 별도 호스트 어댑터의 예외는 [보안 문서](docs/security.md)를 읽는다.
 
-### 선택적으로 파일 쓰기 허용
+### 파일 쓰기는 기본 활성화
 
 ```bash
 export CHAT2LOCAL_ALLOW_WRITE=1
 ```
 
-이 설정은 운영자가 서비스 환경에 넣는다. 모델이 도구 인수로 권한을 켤 수 없다. 각 수정은 `read_file`이 반환한 `sha256`을 `expected_sha256`으로 제공해야 한다. 새 파일은 `absent`를 사용한다. 부모 디렉터리는 미리 존재해야 하며, 삭제·임의 디렉터리 생성 기능은 제공하지 않는다.
+미설정도 위의 `1`과 같다. 끄려면 운영자가 서비스 환경에 `0`을 넣는다. 모델은 도구 인수로 운영자의 제한을 해제할 수 없다. `0`/`1` 이외의 값은 시작 오류로 처리한다. 각 수정은 `read_file`이 반환한 `sha256`을 `expected_sha256`으로 제공해야 한다. 새 파일은 `absent`를 사용한다. 부모 디렉터리는 미리 존재해야 하며, 삭제·임의 디렉터리 생성 기능은 제공하지 않는다.
 
-### 선택적으로 Aside 연결
+### Aside도 기본 활성화
 
 ```bash
 export CHAT2LOCAL_ALLOW_ASIDE=1
+# 이미 기본값은 1이다. 끄려면 0을 사용한다.
 # PATH 검색 대신 승인한 CLI 절대 경로를 지정할 수 있다.
 export CHAT2LOCAL_ASIDE_BINARY=/absolute/path/to/aside
 ```
 
-**중요:** Aside 어댑터는 사용자 계정의 호스트 CLI를 실행한다. Docker 코드 워커와 달리 호스트·브라우저 권한을 갖고 있고, 파일 도구의 워크스페이스 제한이 Aside 자체의 기능을 격리하지는 않는다. 필요한 사용자만 명시적으로 켠다. 모든 Aside 호출은 직렬 실행되어 같은 브라우저를 동시에 조작하는 충돌을 줄인다. CLI 자체의 계정·호스트·네이티브 옵션은 `aside_native`의 argv로 그대로 전달할 수 있다.
+**중요:** Aside 어댑터는 사용자 계정의 호스트 CLI를 실행한다. Docker 코드 워커와 달리 호스트·브라우저 권한을 갖고 있고, 파일 도구의 워크스페이스 제한이 Aside 자체의 기능을 격리하지는 않는다. 개인 사용 편의를 위해 기본적으로 켜져 있으므로, 필요 없는 환경에서는 `CHAT2LOCAL_ALLOW_ASIDE=0`으로 끈다. 서브에이전트 권한을 줄이려면 `CHAT2LOCAL_ASIDE_PERMISSION=guard`를 지정한다. 모든 Aside 호출은 직렬 실행되어 같은 브라우저를 동시에 조작하는 충돌을 줄인다. CLI 자체의 계정·호스트·네이티브 옵션은 `aside_native`의 argv로 그대로 전달할 수 있다.
 
 ## 2. ChatGPT 연결
 
@@ -124,11 +131,11 @@ ChatGPT의 계정·워크스페이스에서 터널과 개발자 연결을 사용
 |---|---|---|
 | 세션 | `session_open`, `session_list`, `session_checkpoint`, `capabilities` | 개인 상태 저널 |
 | 파일 | `read_file`, `list_dir`, `glob`, `grep` | 선택한 소스 폴더, 민감 경로 제외 |
-| 수정 | `write_file` | 쓰기 opt-in + 파일 해시 비교 |
+| 수정 | `write_file` | 개인용 기본 활성화 + 파일 해시 비교, 운영자 비활성화 가능 |
 | 결과 | `artifact_read` | PNG/JPEG/WebP 실제 이미지 또는 UTF-8 텍스트 |
 | 코드 모드 | `code_mode_read`, `code_mode` | Docker 워커 + 서버 측 도구 검증 |
 | 명령 | `exec_command` | 필터링된 복사본, 격리된 임시 파일시스템 |
-| 네이티브 | `aside_native`, `aside_repl`, `spawn_subagent` | 명시적으로 켠 경우에만 권한이 큰 호스트 Aside |
+| 네이티브 | `aside_native`, `aside_repl`, `spawn_subagent` | 개인용 기본 활성화, 권한이 큰 호스트 Aside |
 | 작업 제어 | `job_get`, `job_cancel` | 같은 세션의 작업만 조회·취소 |
 
 `grep`은 정규식이 아닌 **문자열 검색**이다. `glob`은 `*`, `**`, `?`를 지원한다. 잘린 결과는 `truncated`, `next_offset`, 제외된 항목은 `omitted`/`skipped`로 확인한다. 모든 입력 스키마와 기본값은 Zod로 검증되며 MCP SDK에 동일한 스키마가 노출된다.
