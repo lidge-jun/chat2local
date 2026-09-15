@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, symlink, link, rm, readdir, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, symlink, link, rm, readdir, lstat, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Workspace, sha256, globRegex, blockedName, within } from '../src/policy.js';
@@ -196,4 +196,44 @@ test('separate sessions cannot both commit an edit based on the same hash', asyn
   ]);
   assert.equal(outcomes.filter(r => r.status === 'fulfilled').length, 1);
   assert.equal(outcomes.filter(r => r.status === 'rejected').length, 1);
+});
+
+
+test('UTF-8 byte pagination reconstructs Korean and emoji without replacement characters', async t => {
+  const { workspace, root } = await fixture(t);
+  const text = 'ab한🌏글z';
+  await writeFile(join(root, 'unicode.txt'), text);
+  const pages: string[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await workspace.read('unicode.txt', offset, 4);
+    pages.push(page.content);
+    assert.ok(Buffer.byteLength(page.content) <= 4);
+    assert.equal(page.sha256, sha256(text));
+    if (page.next_offset === null) break;
+    assert.ok(page.next_offset > offset);
+    offset = page.next_offset;
+  }
+  assert.deepEqual(pages, ['ab', '한', '🌏', '글z']);
+  assert.equal(pages.join(''), text);
+  await assert.rejects(() => workspace.read('unicode.txt', 3, 4), /UTF-8 boundary/);
+  await assert.rejects(() => workspace.read('unicode.txt', 2, 2), /too small/);
+  assert.equal((await workspace.read('unicode.txt', 100, 4)).content, '');
+});
+
+test('text reads reject invalid UTF-8 rather than silently corrupting source', async t => {
+  const { workspace, root } = await fixture(t);
+  await writeFile(join(root, 'invalid.txt'), Buffer.from([0xc3, 0x28]));
+  await assert.rejects(() => workspace.read('invalid.txt'), /not valid UTF-8/);
+});
+
+test('cached workspace roots fail closed after replacement by a symlink', async t => {
+  const { workspace, root, base } = await fixture(t, true);
+  const outside = join(base, 'outside');
+  await mkdir(outside); await writeFile(join(outside, 'a.ts'), 'outside fixture');
+  await rename(root, join(base, 'moved-project')); await symlink(outside, root);
+  await assert.rejects(() => workspace.read('a.ts'), /Workspace root changed/);
+  await assert.rejects(() => workspace.list('.'), /Workspace root changed/);
+  await assert.rejects(() => workspace.write('a.ts', 'changed', sha256('outside fixture')), /Workspace root changed/);
+  assert.equal(await readFile(join(outside, 'a.ts'), 'utf8'), 'outside fixture');
 });

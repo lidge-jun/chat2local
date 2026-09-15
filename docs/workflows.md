@@ -12,7 +12,7 @@
 
 결과의 `session.id`를 이후 모든 호출에 사용한다. `write_enabled`, `code_mode_configured`, `native_aside_enabled`를 확인한다. `code_mode_configured: true`는 이미지 이름이 설정되어 있다는 뜻이지 Docker나 실제 이미지가 정상이라는 뜻이 아니다. 도구 실패를 다른 호스트 실행기로 우회하지 않는다.
 
-작업이 길어지면 `session_checkpoint`에 지금까지 확인한 근거·변경 파일·다음 행동을 적는다. 비밀값이나 모델의 내부 사고는 기록하지 않는다. 다음 대화는 `session_open({session_id: ...})` 또는 `session_list`에서 시작한다.
+작업이 길어지면 `session_checkpoint`에 지금까지 확인한 근거·변경 파일·다음 행동을 적는다. 비밀값이나 모델의 내부 사고는 기록하지 않는다. 다음 대화는 `session_open({session_id: ...})` 또는 `session_list`에서 시작한다. 프로젝트가 이동·삭제되어도 세션 메모, 작업 조회·취소는 계속 사용할 수 있다. 재개 응답의 `workspace_validated: false`는 기록만 복원했다는 뜻이며, 실제 파일 작업에서는 경로를 다시 검사한다. 이동한 경로를 자동으로 추적하거나 접근 범위를 넓히지는 않는다.
 
 ## 파일을 읽고 수정하기
 
@@ -20,7 +20,7 @@
 {"session_id":"실제 세션 ID","path":"src/example.ts"}
 ```
 
-`read_file`의 결과는 내용, 전체 파일 해시, 전체 바이트 수와 `next_offset`을 담는다. 내용이 잘렸으면 다음 범위를 읽는다. 수정할 때는 이 해시를 사용한다.
+`read_file`의 결과는 내용, 전체 파일 해시, 전체 바이트 수와 `next_offset`을 담는다. 내용이 잘렸으면 반환된 `next_offset`으로 다음 범위를 읽는다. 바이트 제한 안에서 한글·이모지의 완전한 UTF-8 문자 경계까지만 반환하므로 `offset + limit`을 직접 계산하면 안 된다. 문자 중간 offset, 첫 문자보다 작은 limit, 유효하지 않은 UTF-8 입력은 오류로 반환한다. 수정할 때는 이 해시를 사용한다.
 
 ```json
 {

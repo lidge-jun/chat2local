@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Runtime } from '../src/runtime.js';
@@ -81,4 +81,34 @@ test('setup derives project root from its source and is a side-effect-free dry r
   const generated = await setup(['--workspace', root, '--output', output, '--write']);
   assert.match(generated, /Created/); assert.match(await readFile(join(output, 'mcp.sh'), 'utf8'), /CHAT2LOCAL_WORKSPACE/);
   await assert.rejects(() => setup(['--workspace', root, '--output', output, '--write']));
+});
+
+
+test('moving a project cannot disable journal reads, checkpointing or job cancellation', async t => {
+  const { runtime, session_id, root, base } = await fixture(t);
+  const job = await runtime.jobs.start(session_id, 'moving-project', 'fixture', {}, async ({ signal }) => {
+    await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    return 'stopped';
+  });
+  await rename(root, join(base, 'moved-project'));
+  const get = await runtime.invoke('job_get', { session_id, job_id: job.id }) as any;
+  assert.equal(get.status, 'running');
+  const capabilities = await runtime.invoke('capabilities', { session_id }) as any;
+  assert.equal(capabilities.host_shell, false);
+  await runtime.invoke('session_checkpoint', { session_id, summary: 'Source moved; cancel the previous job.' });
+  const resumed = await runtime.invoke('session_open', { session_id }) as any;
+  assert.equal(resumed.workspace_validated, false);
+  assert.match(resumed.session.checkpoint, /Source moved/);
+  const cancelled = await runtime.invoke('job_cancel', { session_id, job_id: job.id }) as any;
+  assert.equal(cancelled.status, 'cancelled');
+  await assert.rejects(() => runtime.invoke('read_file', { session_id, path: 'a.ts' }));
+  await assert.rejects(() => runtime.invoke('job_get', { session_id: crypto.randomUUID(), job_id: job.id }), /Unknown session/);
+});
+
+test('invalid UTF-8 artifacts are rejected and literal search reports their exclusion', async t => {
+  const { runtime, session_id, root } = await fixture(t);
+  await writeFile(join(root, 'invalid.txt'), Buffer.from([0xc3, 0x28]));
+  await assert.rejects(() => runtime.invoke('artifact_read', { session_id, path: 'invalid.txt' }), /not supported/);
+  const found = await runtime.invoke('grep', { session_id, path: 'invalid.txt', pattern: '(' }) as any;
+  assert.deepEqual(found.matches, []); assert.equal(found.skipped, 1);
 });

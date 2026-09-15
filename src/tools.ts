@@ -38,7 +38,7 @@ export const descriptions: Record<ToolName, string> = {
   session_list: 'List this single-operator runtime’s saved task sessions. Checkpoints are task notes, not a restored model context.',
   session_checkpoint: 'Save a concise task checkpoint for later resumption. Do not store secrets or internal reasoning.',
   capabilities: 'Read operator policy, available backends and batch tool names. Configured does not mean the backend has passed a live health check.',
-  read_file: 'Read bounded UTF-8 file content and full-file SHA-256. No shell. Offset/limit are bytes; follow next_offset.',
+  read_file: 'Read bounded UTF-8 file content and full-file SHA-256. No shell. Offset/limit are bytes; pages end at complete UTF-8 characters. Follow next_offset; invalid UTF-8 is rejected.',
   write_file: 'Compare-and-swap a UTF-8 file after reviewing its content. Operator write opt-in is required. No directories, hooks or commands are executed.',
   list_dir: 'List scoped files and directories, optionally recursively. Sensitive paths, symlinks, hardlinks and build/dependency directories are omitted. Check truncated.',
   glob: 'Find scoped files using *, ** and ? glob patterns. No shell or regex interpolation; check truncated.',
@@ -50,8 +50,8 @@ export const descriptions: Record<ToolName, string> = {
   aside_native: 'Invoke exact Aside CLI argv without shell interpolation. This is a PRIVILEGED HOST adapter, not a sandbox. Disabled by default; serializes all Aside calls. Returns job_id.',
   aside_repl: 'Use the optional privileged Aside adapter for direct browser JavaScript, retaining account/host options. Prefer direct calls for visual or single-step tasks. Returns job_id.',
   spawn_subagent: 'Optionally delegate an independent task to Aside exec with guard permission. Not the default coding route. Privileged operator opt-in is required. Returns job_id.',
-  job_get: 'Get status, cursor-paged events, terminal result and errors for a job in this session. wait_ms <=10000. Failed/interrupted work is never automatically replayed.',
-  job_cancel: 'Request cancellation, then inspect job_get until terminal. Already-applied file changes or browser actions are not rolled back.',
+  job_get: 'Get status, cursor-paged events, terminal result and errors for a job in this session. wait_ms <=10000. Available even if the source directory moved. Failed/interrupted work is never automatically replayed.',
+  job_cancel: 'Request cancellation even if the project directory moved; inspect job_get until terminal. Already-applied file changes or browser actions are not rolled back.',
 };
 
 export const readTools = new Set<ToolName>(['session_list', 'capabilities', 'read_file', 'list_dir', 'glob', 'grep', 'artifact_read', 'code_mode_read', 'job_get']);

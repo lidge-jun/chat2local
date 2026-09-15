@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { isUtf8 } from 'node:buffer';
 import { lstat, open, readdir, realpath, rename, unlink, mkdir, chmod } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -34,6 +35,10 @@ export class Workspace {
   }
 
   async path(input: string, missingLeaf = false): Promise<string> {
+    // A cached session root can be moved or replaced between calls. Revalidate
+    // it too, not only descendants; do not follow a newly substituted symlink.
+    if (!(await lstat(this.root)).isDirectory() || await realpath(this.root) !== this.root)
+      throw new PolicyError('Workspace root changed; select a valid source directory');
     if (!input || input.includes('\0') || input.includes('\\')) throw new PolicyError('Invalid path');
     const target = resolve(this.root, input);
     if (!within(this.root, target)) throw new PolicyError('Path escapes the selected workspace');
@@ -76,9 +81,16 @@ export class Workspace {
 
   async read(path: string, offset = 0, limit = LIMITS.readBytes) {
     const data = await this.buffer(path);
-    return { path, content: data.subarray(offset, offset + limit).toString('utf8'),
+    if (!isUtf8(data)) throw new PolicyError('File is not valid UTF-8; refusing a lossy text read');
+    const continuation = (index: number) => index < data.length && (data[index] & 0xc0) === 0x80;
+    if (offset < data.length && continuation(offset)) throw new PolicyError('Offset must be a UTF-8 boundary; follow next_offset');
+    let end = Math.min(data.length, offset + limit);
+    // Keep the byte limit without returning half a Korean character or emoji.
+    while (end > offset && continuation(end)) end--;
+    if (end === offset && offset < data.length) throw new PolicyError('Read limit is too small for the next UTF-8 character; use at least 4 bytes');
+    return { path, content: data.subarray(offset, end).toString('utf8'),
       sha256: sha256(data), total_bytes: data.length, offset,
-      next_offset: offset + limit < data.length ? offset + limit : null };
+      next_offset: end < data.length ? end : null };
   }
 
   /** Serialized compare-and-swap edits; callers must read and supply the current hash. */

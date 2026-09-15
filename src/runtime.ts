@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isUtf8 } from 'node:buffer';
 import { lstat } from 'node:fs/promises';
 import { basename, relative } from 'node:path';
 import { LIMITS, type Config } from './config.js';
@@ -32,9 +33,14 @@ export class Runtime {
     } catch (e) { await store.close(); throw e; }
   }
 
-  private async session(id: string) {
+  private sessionRecord(id: string): SessionRecord {
     const record = this.sessions.get(id);
     if (!record) throw new Error('Unknown session; use session_open');
+    return record;
+  }
+
+  private async session(id: string) {
+    const record = this.sessionRecord(id);
     const project = await this.workspace.path(record.project);
     if (!this.workspaces.has(id)) this.workspaces.set(id, await Workspace.create(project, this.config.allowWrite));
     return { record, workspace: this.workspaces.get(id)! };
@@ -51,8 +57,10 @@ export class Runtime {
 
   private async openSession(args: { session_id?: string; project: string; title: string }) {
     if (args.session_id) {
-      const { record } = await this.session(args.session_id);
-      return { session: record, jobs: this.jobs.list(record.id), ...this.capabilities() };
+      // Resuming task records must not require a still-existing source directory.
+      // Every subsequent file/backend operation validates its own workspace.
+      const record = this.sessionRecord(args.session_id);
+      return { session: record, jobs: this.jobs.list(record.id), workspace_validated: false, ...this.capabilities() };
     }
     if (this.sessions.size >= LIMITS.sessions) throw new Error('Session limit reached; resume an existing session');
     const project = await this.workspace.path(args.project);
@@ -72,7 +80,9 @@ export class Runtime {
       const op = this.sessionQueue.then(() => this.openSession(args)); this.sessionQueue = op.catch(() => {}); return op;
     }
     if (name === 'session_list') return { sessions: [...this.sessions.values()] };
-    const { record, workspace } = await this.session(args.session_id);
+    // Job control and checkpoints are journal operations, not source access.
+    // Moving/deleting a project must never make a running job uncancellable.
+    const record = this.sessionRecord(args.session_id);
     if (name === 'capabilities') return this.capabilities();
     if (name === 'session_checkpoint') {
       const updated = { ...record, checkpoint: args.summary };
@@ -80,6 +90,7 @@ export class Runtime {
     }
     if (name === 'job_get') return this.jobs.get(record.id, args.job_id, args.cursor, args.wait_ms);
     if (name === 'job_cancel') return this.jobs.cancel(record.id, args.job_id);
+    const { workspace } = await this.session(record.id);
     if ((batchReads as readonly string[]).includes(name) || name === 'write_file' || name === 'artifact_read') return this.primitive(name, args, workspace, signal);
     const ctxInput = { ...args }; delete ctxInput.request_id;
     if (name === 'code_mode' || name === 'code_mode_read') {
@@ -125,7 +136,7 @@ export class Runtime {
         if (entry.size > LIMITS.fileBytes) { skipped++; continue; }
         if ((bytes += entry.size) > LIMITS.snapshotBytes) { truncated = true; break; }
         const data = await workspace.buffer(entry.path);
-        if (data.includes(0)) { skipped++; continue; }
+        if (data.includes(0) || !isUtf8(data)) { skipped++; continue; }
         for (const [index, line] of data.toString('utf8').split('\n').entries()) {
           if ((args.caseSensitive ? line : line.toLowerCase()).includes(query)) matches.push({ path: entry.path, line: index + 1, content: line.slice(0, 2000) });
           if (matches.length >= args.maxResults) { truncated = true; break; }
@@ -142,7 +153,7 @@ export class Runtime {
       else if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) mime = 'image/jpeg';
       else if (data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP') mime = 'image/webp';
       if (mime) return { image: { data: data.toString('base64'), mimeType: mime }, name: basename(args.path), sha256: sha256(data) };
-      if (data.includes(0) || data.toString('ascii', 0, 5) === '%PDF-') throw new Error('Binary artifact not supported inline; only PNG/JPEG/WebP and UTF-8 text');
+      if (data.includes(0) || !isUtf8(data) || data.toString('ascii', 0, 5) === '%PDF-') throw new Error('Binary artifact not supported inline; only PNG/JPEG/WebP and UTF-8 text');
       return { name: basename(args.path), text: data.toString('utf8'), sha256: sha256(data) };
     }
     throw new Error('Unknown primitive');
