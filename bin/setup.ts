@@ -1,252 +1,50 @@
 #!/usr/bin/env bun
-/**
- * Codex MCP Server - Easy Onboarding Setup
- * Automates installation, tunnel-client setup, and ChatGPT connector configuration
- */
+import { fileURLToPath } from 'node:url';
+import { basename, dirname, join, resolve } from 'node:path';
+import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { parseArgs } from 'node:util';
 
-import { spawn, execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { homedir } from "node:os";
+const sourcePath = fileURLToPath(import.meta.url);
+export const PROJECT_ROOT = resolve(dirname(sourcePath), basename(dirname(dirname(sourcePath))) === 'dist' ? '../..' : '..');
+const entryPath = join(PROJECT_ROOT, sourcePath.endsWith('.ts') ? 'bin/mcp.ts' : 'dist/bin/mcp.js');
+export const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
 
-const PROJECT_ROOT = resolve(process.cwd(), "..");
-const CONFIG_DIR = join(homedir(), ".chat2local");
-const TUNNEL_PROFILE_NAME = "chat2local";
-
-interface SetupConfig {
-  workspace?: string;
-  tunnelId?: string;
-  apiKey?: string;
-  connectorName?: string;
-}
-
-function log(message: string) {
-  console.log(`[setup] ${message}`);
-}
-
-function error(message: string) {
-  console.error(`[setup] ERROR: ${message}`);
-  process.exit(1);
-}
-
-function run(command: string, cwd?: string): string {
-  try {
-    return execSync(command, {
-      cwd: cwd || PROJECT_ROOT,
-      encoding: "utf-8",
-      stdio: "pipe",
-    }).toString().trim();
-  } catch (e: any) {
-    throw new Error(`Command failed: ${command}\n${e.message}`);
+/** Generates a launch wrapper only. Never installs, downloads, starts services or writes API keys. */
+export async function setup(argv: string[]) {
+  const { values } = parseArgs({ args: argv, options: {
+    workspace: { type: 'string' }, 'tunnel-id': { type: 'string' },
+    output: { type: 'string', default: join(PROJECT_ROOT, '.chat2local-local') },
+    write: { type: 'boolean', default: false }, help: { type: 'boolean', default: false },
+  }, strict: true });
+  if (values.help || !values.workspace) {
+    return 'Usage: bun run setup --workspace /absolute/source/project [--tunnel-id tunnel_...] [--write]\n'
+      + 'Dry run by default. --write creates only a private launcher; no dependencies, tunnel or service is installed.\n'
+      + 'Provide CONTROL_PLANE_API_KEY only to tunnel-client, never as a chat/tool argument.';
   }
-}
-
-function checkBun(): void {
-  log("Checking Bun installation...");
-  try {
-    const version = run("bun --version");
-    log(`Bun ${version} found`);
-  } catch {
-    error("Bun is not installed. Install it from https://bun.sh");
+  const workspace = await realpath(resolve(values.workspace));
+  const output = resolve(values.output!);
+  const wrapper = join(output, 'mcp.sh');
+  // Bun executes this source; the path is anchored to this script rather than caller cwd.
+  const contents = '#!/bin/sh\nset -eu\n'
+    + `export CHAT2LOCAL_WORKSPACE=${quote(workspace)}\n`
+    + '# Set operator-owned CHAT2LOCAL_ALLOW_WRITE / CHAT2LOCAL_WORKER_IMAGE in the service environment.\n'
+    + `exec ${quote(process.execPath)} ${quote(entryPath)}\n`;
+  const id = values['tunnel-id'];
+  if (id && !/^tunnel_[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid tunnel ID');
+  if (values.write) {
+    await mkdir(output, { recursive: true, mode: 0o700 });
+    await writeFile(wrapper, contents, { flag: 'wx', mode: 0o700 });
   }
+  return `${values.write ? 'Created' : 'Dry run; would create'}: ${wrapper}\n\n${contents}\n`
+    + 'Install tunnel-client using the official supported installer on a provisioning machine.\n'
+    + 'Run these commands yourself after reviewing the launcher and setting CONTROL_PLANE_API_KEY:\n'
+    + `tunnel-client init --sample sample_mcp_stdio_local --profile chat2local --tunnel-id ${quote(id || 'YOUR_TUNNEL_ID')} --mcp-command ${quote(wrapper)}\n`
+    + 'tunnel-client doctor --profile chat2local --explain\n'
+    + 'tunnel-client run --profile chat2local\n\n'
+    + 'Only report connection success after doctor/runtime readiness and a real ChatGPT session_open call.\n'
+    + 'Do not run two active stdio runtimes with the same tunnel ID. No launchd or existing profile was changed.';
 }
 
-function installDependencies(): void {
-  log("Installing dependencies...");
-  run("bun install");
-  log("Dependencies installed");
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  setup(process.argv.slice(2)).then(console.log).catch(e => { console.error(e.message); process.exitCode = 1; });
 }
-
-function ensureConfigDir(): void {
-  log("Creating config directory...");
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  mkdirSync(join(CONFIG_DIR, "logs"), { recursive: true });
-  mkdirSync(join(CONFIG_DIR, "tunnel", "profiles"), { recursive: true });
-  log(`Config directory: ${CONFIG_DIR}`);
-}
-
-function downloadTunnelClient(): void {
-  log("Downloading tunnel-client...");
-  const binPath = join(CONFIG_DIR, "bin", "tunnel-client");
-  
-  if (existsSync(binPath)) {
-    log("tunnel-client already exists");
-    return;
-  }
-  
-  mkdirSync(join(CONFIG_DIR, "bin"), { recursive: true });
-  
-  // Download from OpenAI releases
-  const arch = process.arch === "arm64" ? "arm64" : "amd64";
-  const url = `https://github.com/openai/tunnel-client/releases/latest/download/tunnel-client-darwin-${arch}`;
-  
-  run(`curl -L -o "${binPath}" "${url}"`);
-  run(`chmod +x "${binPath}"`);
-  
-  // Remove quarantine
-  try {
-    run(`xattr -cr "${binPath}"`);
-  } catch {
-    // Ignore if xattr fails
-  }
-  
-  log(`tunnel-client installed: ${binPath}`);
-}
-
-function createTunnelProfile(apiKey: string): void {
-  log("Creating tunnel profile...");
-  
-  const profilePath = join(CONFIG_DIR, "tunnel", "profiles", `${TUNNEL_PROFILE_NAME}.yaml`);
-  const mcpPath = join(PROJECT_ROOT, "bin", "mcp.ts");
-  
-  const profile = `# Codex MCP Server Tunnel Profile
-api_key: ${apiKey}
-runtime_command:
-  - bun
-  - ${mcpPath}
-  - --stdio
-working_directory: ${PROJECT_ROOT}
-env:
-  CODEX_MCP_WORKSPACE: ${process.env.CODEX_MCP_WORKSPACE || join(homedir(), "developer", "new", "700_projects")}
-`;
-  
-  writeFileSync(profilePath, profile);
-  log(`Profile created: ${profilePath}`);
-}
-
-function installLaunchdService(): void {
-  log("Installing launchd service...");
-  
-  const plistPath = join(homedir(), "Library", "LaunchAgents", "com.chat2local.plist");
-  const binPath = join(CONFIG_DIR, "bin", "tunnel-client");
-  const profilePath = join(CONFIG_DIR, "tunnel", "profiles", `${TUNNEL_PROFILE_NAME}.yaml`);
-  
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.chat2local</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${binPath}</string>
-    <string>run</string>
-    <string>--profile</string>
-    <string>${profilePath}</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>${PROJECT_ROOT}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>/Users/${process.env.USER}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <key>HOME</key>
-    <string>${homedir()}</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>ThrottleInterval</key>
-  <integer>10</integer>
-  <key>StandardOutPath</key>
-  <string>${join(CONFIG_DIR, "logs", "tunnel.stdout.log")}</string>
-  <key>StandardErrorPath</key>
-  <string>${join(CONFIG_DIR, "logs", "tunnel.stderr.log")}</string>
-</dict>
-</plist>`;
-  
-  writeFileSync(plistPath, plist);
-  
-  // Load the service
-  try {
-    run(`launchctl unload "${plistPath}" 2>/dev/null || true`);
-    run(`launchctl load "${plistPath}"`);
-    log("Launchd service installed and loaded");
-  } catch (e) {
-    log("Warning: Could not load launchd service automatically");
-    log(`Please run: launchctl load "${plistPath}"`);
-  }
-}
-
-function printInstructions(apiKey: string, connectorName: string): void {
-  console.log(`
-╔════════════════════════════════════════════════════════════════════════════╗
-║                    Codex MCP Server - Setup Complete                       ║
-╚════════════════════════════════════════════════════════════════════════════╝
-
-Next steps:
-
-1. Open ChatGPT web: https://chatgpt.com
-
-2. Go to Settings → Security and login → Enable Developer Mode
-
-3. Go to Plugins → Create new developer mode app:
-   - Name: ${connectorName}
-   - Connection type: Tunnel
-   - Select your tunnel from the list
-
-4. Set permissions:
-   - Enable "Allow all actions" for full access
-   - Or configure specific tool permissions
-
-5. Use in ChatGPT:
-   @${connectorName} list_dir .
-   @${connectorName} read_file package.json
-   @${connectorName} exec_command "git status"
-
-Configuration:
-- Config dir: ${CONFIG_DIR}
-- Tunnel profile: ${TUNNEL_PROFILE_NAME}
-- Logs: ${join(CONFIG_DIR, "logs")}
-
-To uninstall:
-  launchctl unload ~/Library/LaunchAgents/com.chat2local.plist
-  rm ~/Library/LaunchAgents/com.chat2local.plist
-  rm -rf ${CONFIG_DIR}
-
-Documentation: https://github.com/openai/tunnel-client
-`);
-}
-
-async function main() {
-  const args = process.argv.slice(2);
-  const config: SetupConfig = {};
-  
-  // Parse arguments
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--workspace" && args[i + 1]) {
-      config.workspace = args[i + 1];
-      i++;
-    } else if (args[i] === "--api-key" && args[i + 1]) {
-      config.apiKey = args[i + 1];
-      i++;
-    } else if (args[i] === "--connector-name" && args[i + 1]) {
-      config.connectorName = args[i + 1];
-      i++;
-    }
-  }
-  
-  const apiKey = config.apiKey || process.env.OPENAI_API_KEY;
-  const connectorName = config.connectorName || "Codex MCP";
-  
-  if (!apiKey) {
-    error("OpenAI API key required. Set OPENAI_API_KEY or use --api-key");
-  }
-  
-  log("Starting Codex MCP Server setup...");
-  
-  checkBun();
-  installDependencies();
-  ensureConfigDir();
-  downloadTunnelClient();
-  createTunnelProfile(apiKey);
-  installLaunchdService();
-  printInstructions(apiKey, connectorName);
-  
-  log("Setup complete!");
-}
-
-main().catch((e) => {
-  error(e.message);
-});

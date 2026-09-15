@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "codex-mcp-server",
+      "name": "chat2local",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.0.0",
         "zod": "^3.23.0",

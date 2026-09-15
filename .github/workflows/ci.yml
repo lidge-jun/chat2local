@@ -1,0 +1,33 @@
+name: isolated-validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install pinned dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Strict typecheck and compile
+        run: bun run typecheck && bun run build
+      - name: Core and MCP protocol tests
+        run: bun run test
+      - name: Provision disposable worker image in hosted CI only
+        run: docker pull node:22-alpine
+      - name: Real Docker integration tests
+        env:
+          CHAT2LOCAL_DOCKER_TESTS: '1'
+          CHAT2LOCAL_TEST_IMAGE: node:22-alpine
+        run: node --test dist/tests/docker.test.js

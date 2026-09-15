@@ -1,4 +1,6 @@
 node_modules/
+dist/
 .codexclaw/
+.chat2local-local/
 *.log
 .DS_Store

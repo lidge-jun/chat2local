@@ -1,13 +1,14 @@
 {
   "name": "chat2local",
-  "version": "1.0.0",
-  "description": "ChatGPT web to local machine bridge via official Secure MCP Tunnel - codex exec, aside exec/repl, codex-like tools",
+  "version": "1.1.0",
+  "description": "Chat-first local workbench: scoped file tools, disposable code-mode workers, resumable jobs and optional Aside",
   "type": "module",
   "scripts": {
     "start": "bun run bin/mcp.ts",
-    "serve": "bun run bin/serve.ts",
     "setup": "bun run bin/setup.ts",
-    "install": "bun install"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test dist/tests/*.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
