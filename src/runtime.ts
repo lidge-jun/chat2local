@@ -46,11 +46,17 @@ export class Runtime {
     return { record, workspace: this.workspaces.get(id)! };
   }
   capabilities() {
+    const backend = this.config.sandboxBackend;
+    const configured = backend === 'seatbelt' ? Boolean(this.config.nodeBinary)
+      : backend === 'docker' ? Boolean(this.config.workerImage) : false;
     return { host_shell: false, write_enabled: this.config.allowWrite,
-      code_mode_configured: Boolean(this.config.workerImage), worker_image: this.config.workerImage || null,
+      sandbox_backend: backend,
+      code_mode_configured: configured, worker_image: this.config.workerImage || null,
       native_aside_enabled: this.config.allowAside, native_aside_is_sandboxed: false,
       native_aside_permission: this.config.asidePermission, operator_mode: 'personal',
-      isolated_commands: 'Filtered snapshot, network disabled, no copy-back; dependencies must already be in the image',
+      isolated_commands: backend === 'seatbelt'
+        ? 'Filtered snapshot copied into a scratch directory and run under macOS Seatbelt: no network, no access to the live project, no copy-back. Host tools on PATH remain visible and rlimits bound an honest runaway, not a determined attacker.'
+        : 'Filtered snapshot, network disabled, no copy-back; dependencies must already be in the image',
       batch_read_tools: batchReads, batch_write_tools: batchWrites.filter(t => t === 'write_file' ? this.config.allowWrite : this.config.allowAside),
       code_api: ['await tools.list()', 'await tools.call(name, args)', 'await tools.map(items, async (item, index) => ..., concurrency)'],
       limits: LIMITS, live_backend_health_checked: false, instructions: INSTRUCTIONS };

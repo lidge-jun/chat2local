@@ -9,6 +9,8 @@ import { Jobs } from '../src/jobs.js';
 import { loadConfig } from '../src/config.js';
 import { runProcess, backendEnv } from '../src/process.js';
 import { dockerArgs, Sandbox } from '../src/sandbox.js';
+import { buildSeatbeltProfile, seatbeltArgs, SEATBELT_EXECUTABLE } from '../src/seatbelt-policy.js';
+import { realpathSync } from 'node:fs';
 import { WORKER_SOURCE } from '../src/worker-source.js';
 
 async function fixture(t: any, writable = false) {
@@ -20,10 +22,12 @@ async function fixture(t: any, writable = false) {
 }
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-test('personal defaults enable writes and native Aside without enabling host code execution', () => {
-  const config = loadConfig({});
+test('personal defaults enable writes and native Aside without enabling unsandboxed code execution', () => {
+  const config = loadConfig({}, 'linux');
   assert.equal(config.allowWrite, true); assert.equal(config.allowAside, true);
   assert.equal(config.asidePermission, 'full-access'); assert.equal(config.workerImage, undefined);
+  // Without an image, a non-macOS host has no execution backend at all.
+  assert.equal(config.sandboxBackend, 'none');
 });
 
 test('explicit operator restrictions override personal defaults', () => {
@@ -185,9 +189,105 @@ test('Docker arguments do not expose host capabilities, secrets or mounts', () =
   for (const flag of ['--privileged', '--pid=host', '--network=host', '--mount', '-v']) assert.equal(args.includes(flag), false);
 });
 
-test('sandbox fails closed when the operator has not configured an image', async () => {
-  const sandbox = new Sandbox(loadConfig({}));
+test('sandbox fails closed when no backend is available on the platform', async () => {
+  const sandbox = new Sandbox(loadConfig({}, 'linux'));
   await assert.rejects(() => sandbox.code('return 42', 1000, { signal: new AbortController().signal, log() {} }, async () => null), /No host fallback/);
+});
+
+test('backend selection prefers the platform sandbox and never invents one', () => {
+  // The interpreter is resolved from PATH, so a realistic PATH is part of the input.
+  const withNode = { PATH: process.env.PATH };
+  // macOS needs no installation: Seatbelt ships with the OS.
+  assert.equal(loadConfig(withNode, 'darwin').sandboxBackend, 'seatbelt');
+  // Other platforms require an explicitly provisioned image.
+  assert.equal(loadConfig(withNode, 'linux').sandboxBackend, 'none');
+  assert.equal(loadConfig({ ...withNode, CHAT2LOCAL_WORKER_IMAGE: 'node:22-alpine' }, 'linux').sandboxBackend, 'docker');
+  // With no interpreter at all, macOS has no usable backend and must not claim one.
+  assert.equal(loadConfig({ PATH: '' }, 'darwin').sandboxBackend, 'none');
+  // An explicit operator choice always wins over auto-selection.
+  assert.equal(loadConfig({ ...withNode, CHAT2LOCAL_SANDBOX: 'docker', CHAT2LOCAL_WORKER_IMAGE: 'node:22-alpine' }, 'darwin').sandboxBackend, 'docker');
+  assert.equal(loadConfig({ ...withNode, CHAT2LOCAL_SANDBOX: 'none' }, 'darwin').sandboxBackend, 'none');
+  assert.throws(() => loadConfig({ ...withNode, CHAT2LOCAL_SANDBOX: 'seatbelt' }, 'linux'), /requires macOS/);
+  assert.throws(() => loadConfig({ ...withNode, CHAT2LOCAL_SANDBOX: 'vm' }, 'darwin'), /must be seatbelt, docker or none/);
+});
+
+test('Seatbelt profile denies by default, scopes writes and never opts into the network', () => {
+  const { policy, params } = buildSeatbeltProfile({ readableRoots: ['/tmp/read'], writableRoots: ['/tmp/write'] });
+  assert.match(policy, /^\(version 1\)/);
+  assert.match(policy, /\(deny default\)/);
+  // Network stays denied by omission: no allow rule may appear anywhere.
+  assert.equal(/\(allow network-outbound/.test(policy), false);
+  assert.equal(/\(allow network-inbound/.test(policy), false);
+  assert.equal(/\(allow network-bind/.test(policy), false);
+  // Paths are passed as parameters, never interpolated into policy text.
+  assert.equal(policy.includes('/tmp/write'), false);
+  assert.match(policy, /\(allow file-write\*\n {2}\(subpath \(param "CHAT2LOCAL_WRITABLE_ROOT_0"\)\)\)/);
+  // Values are the RESOLVED paths; on macOS /tmp resolves to /private/tmp.
+  assert.deepEqual(params.map(([key]) => key), ['CHAT2LOCAL_READABLE_ROOT_0', 'CHAT2LOCAL_WRITABLE_ROOT_0']);
+  assert.deepEqual(params.map(([, value]) => value), [realpathSync.native('/tmp') + '/read', realpathSync.native('/tmp') + '/write']);
+  // The sandbox must not be able to unlink the root anchoring its own policy.
+  assert.match(policy, /deny file-write-unlink[\s\S]*CHAT2LOCAL_WRITABLE_ROOT_0/);
+});
+
+test('Seatbelt argv uses the absolute system binary and rejects unquotable roots', () => {
+  assert.equal(SEATBELT_EXECUTABLE, '/usr/bin/sandbox-exec');
+  const args = seatbeltArgs('(version 1)', [['ROOT', '/tmp/x']], ['/bin/sh', '-c', 'echo hi']);
+  assert.deepEqual(args, ['-p', '(version 1)', '-DROOT=/tmp/x', '--', '/bin/sh', '-c', 'echo hi']);
+  // -D has no escape syntax, so a newline must fail loudly rather than truncate the policy.
+  assert.throws(() => seatbeltArgs('(version 1)', [['ROOT', '/tmp/a\nb']], ['/bin/sh']), /unsupported character/);
+});
+
+test('Seatbelt profile keeps the three rules a live probe proved are load-bearing', () => {
+  // Each assertion here corresponds to a concrete observed failure, not a guess.
+  const { policy } = buildSeatbeltProfile({ readableRoots: ['/tmp/read'], writableRoots: ['/tmp/write'] });
+  // 1. Without OpenSSL config access, node aborts during startup with a BIO_new_file error.
+  assert.match(policy, /\(subpath "\/System\/Library\/OpenSSL"\)/);
+  // 2. Readable is not sufficient to execute: the loader needs file-map-executable
+  //    for system binaries and for the interpreter's own root.
+  assert.match(policy, /\(allow file-map-executable[\s\S]*\(subpath "\/usr\/bin"\)/);
+  assert.match(policy, /\(allow file-map-executable\n {2}\(subpath \(param "CHAT2LOCAL_READABLE_ROOT_0"\)\)\)/);
+});
+
+test('Seatbelt roots are resolved, because /tmp and /var are symlinks on macOS', { skip: process.platform !== 'darwin' }, () => {
+  // Seatbelt matches the resolved path, so an unresolved /tmp root silently
+  // matches nothing and every access inside it is denied.
+  const { params } = buildSeatbeltProfile({ readableRoots: [], writableRoots: ['/tmp'] });
+  assert.deepEqual(params, [['CHAT2LOCAL_WRITABLE_ROOT_0', '/private/tmp']]);
+  // A path that does not exist yet still resolves through its parent.
+  const pending = buildSeatbeltProfile({ readableRoots: [], writableRoots: ['/tmp/not-created-yet'] });
+  assert.deepEqual(pending.params, [['CHAT2LOCAL_WRITABLE_ROOT_0', '/private/tmp/not-created-yet']]);
+});
+
+test('Seatbelt worker launch fixes cwd and sets no process-count rlimit', () => {
+  const config = { ...loadConfig({ PATH: process.env.PATH }, 'darwin'), sandboxBackend: 'seatbelt' as const, nodeBinary: '/usr/local/bin/node' };
+  const prelude = new Sandbox(config).codeLaunch('/tmp/scratch').args.find(a => a.includes('ulimit'));
+  assert.ok(prelude, 'expected an rlimit prelude');
+  // node calls process.cwd() while bootstrapping --input-type=module; inheriting an
+  // unreadable cwd aborts the worker with EPERM before user code runs.
+  assert.match(prelude!, /cd '\/tmp\/scratch'/);
+  assert.match(prelude!, /PWD='\/tmp\/scratch'/);
+  // ulimit -u counts processes per UID on macOS, not per tree: a small value fails
+  // immediately on a normal desktop session and a safe value bounds nothing.
+  assert.equal(/ulimit -u/.test(prelude!), false);
+  assert.match(prelude!, /ulimit -n /);
+});
+
+test('Seatbelt code worker gets a scratch-only writable root and no project access', () => {
+  const config = { ...loadConfig({ PATH: process.env.PATH }, 'darwin'), sandboxBackend: 'seatbelt' as const,
+    nodeBinary: '/usr/local/bin/node', workspace: '/Users/op/project' };
+  const launch = new Sandbox(config).codeLaunch('/tmp/scratch');
+  assert.equal(launch.binary, SEATBELT_EXECUTABLE);
+  // Seatbelt leaves no daemon-side state, so there is nothing to clean up.
+  assert.equal(launch.containerName, undefined);
+  const policy = launch.args[launch.args.indexOf('-p') + 1];
+  const definitions = launch.args.filter(a => a.startsWith('-D'));
+  // The only writable root is the disposable scratch directory.
+  const writable = definitions.filter(d => d.startsWith('-DCHAT2LOCAL_WRITABLE_ROOT_'));
+  assert.equal(writable.length, 1);
+  assert.match(writable[0]!, /scratch$/);
+  // Code mode reaches files through broker RPC, so the project is never readable.
+  assert.equal(definitions.some(d => d.includes('/Users/op/project')), false);
+  assert.equal(/\(allow network/.test(policy), false);
 });
 
 test('worker program maps in order and returns values (test-only isolated Node process)', async () => {

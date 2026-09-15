@@ -13,7 +13,8 @@ ChatGPT가 이미 내린 판단을 또 다른 에이전트에게 재전달하는
 | `src/policy.ts` | 소스 경로 제한, 파일 해시, compare-and-swap, 스냅샷 |
 | `src/store.ts` | private JSON 기록과 단일 프로세스 잠금 |
 | `src/jobs.ts` | 중복 요청 방지, 조회·취소·중단 기록 |
-| `src/sandbox.ts` | Docker 제한, broker frame 처리, 종료·정리 |
+| `src/sandbox.ts` | 백엔드 선택(Seatbelt/Docker), 실행 제한, broker frame 처리, 종료·정리 |
+| `src/seatbelt-policy.ts` | macOS Seatbelt 프로필 생성과 `-D` 파라미터 바인딩 |
 | `src/worker-source.ts` | 컨테이너에서만 실행하는 JavaScript 프로그램 |
 | `src/process.ts` | 제한된 환경 상속, 출력 한도, 프로세스 그룹 취소 |
 | `bin/setup.ts` | 안전한 launcher 미리보기와 명시적 파일 생성 |
@@ -56,4 +57,4 @@ Chat on Steroids의 채팅 중심 작업 흐름, codex-with-chatgpt의 판단·�
 
 1.2.0부터 파일 쓰기와 Aside는 개인용 기본값으로 켜져 있고, Aside exec 권한은 `full-access`다. 운영자는 `CHAT2LOCAL_ALLOW_WRITE=0`, `CHAT2LOCAL_ALLOW_ASIDE=0`, `CHAT2LOCAL_ASIDE_PERMISSION=guard`로 제한할 수 있다. `0`/`1` 이외의 활성화 값은 무시하지 않고 시작 오류로 처리한다. MCP 도구 인수로 운영자 제한을 바꾸는 경로는 없다.
 
-CI는 의존성을 포함한 Bun 실행 번들을 별도 아티팩트로 게시한다. 소스 커밋과 해시를 검증하고 복사하면 개인 호스트에서 install/build 없이 배포할 수 있다. 운영 서버 시작과 계정별 커넥터 등록은 번들 검사와 별개이며, 등록·연결을 실제 확인하기 전에는 활성화 완료라고 보고하지 않는다. Docker 이미지가 준비되지 않은 경우 코드 모드의 호스트 우회 실행은 여전히 없다.
+CI는 의존성을 포함한 Bun 실행 번들을 별도 아티팩트로 게시한다. 소스 커밋과 해시를 검증하고 복사하면 개인 호스트에서 install/build 없이 배포할 수 있다. 운영 서버 시작과 계정별 커넥터 등록은 번들 검사와 별개이며, 등록·연결을 실제 확인하기 전에는 활성화 완료라고 보고하지 않는다. CI는 두 백엔드를 각각의 러너에서 검증한다. Linux 러너가 Docker 통합을, macOS 러너가 실제 Seatbelt 실행을 확인한다. 사용 가능한 샌드박스 백엔드가 없으면 코드 모드는 실패하며, 프로세스 내부 우회 실행은 어느 경우에도 없다.

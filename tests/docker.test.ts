@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Runtime } from '../src/runtime.js';
@@ -8,7 +8,8 @@ import { loadConfig } from '../src/config.js';
 
 const enabled = process.env.CHAT2LOCAL_DOCKER_TESTS === '1';
 async function fixture(t: any) {
-  const base = await mkdtemp(join(tmpdir(), 'chat2local-docker-'));
+  // tmpdir() is a symlink on macOS and the runtime requires a canonical state path.
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-docker-')));
   const root = join(base, 'project'); await mkdir(root); await writeFile(join(root, 'a.ts'), 'original');
   await writeFile(join(root, '.env'), 'FAKE_FIXTURE_SECRET=must-not-copy');
   const runtime = await Runtime.create({ ...loadConfig({}), workspace: root, stateDir: join(base, 'state'),

@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 jobs:
-  validate:
+  validate-docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -57,3 +57,33 @@ jobs:
           path: release/
           if-no-files-found: error
           retention-days: 14
+
+  validate-seatbelt:
+    # Seatbelt is the default backend on macOS and needs no installation, so it is
+    # verified on a real macOS runner rather than asserted from policy text alone.
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install pinned dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Strict typecheck and compile
+        run: bun run typecheck && bun run build
+      - name: Core and MCP protocol tests
+        run: bun run test
+      - name: Confirm the host provides Seatbelt and no Docker fallback is used
+        run: |
+          test -x /usr/bin/sandbox-exec
+          echo "sandbox-exec present; Docker is not required for this job"
+      - name: Real macOS Seatbelt integration tests
+        env:
+          CHAT2LOCAL_SEATBELT_TESTS: '1'
+        run: node --test dist/tests/seatbelt.test.js
