@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, symlink, link, rm, readdir, lstat, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, symlink, link, rm, readdir, lstat, realpath, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Workspace, sha256, globRegex, blockedName, within } from '../src/policy.js';
@@ -14,7 +14,7 @@ import { realpathSync } from 'node:fs';
 import { WORKER_SOURCE } from '../src/worker-source.js';
 
 async function fixture(t: any, writable = false) {
-  const base = await mkdtemp(join(tmpdir(), 'chat2local-test-'));
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-test-')));
   t.after(() => rm(base, { recursive: true, force: true }));
   const root = join(base, 'project'); await mkdir(root);
   await writeFile(join(root, 'a.ts'), 'first line\nconst answer = 42;\n안녕 🌏\n');
@@ -258,7 +258,7 @@ test('Seatbelt roots are resolved, because /tmp and /var are symlinks on macOS',
   assert.deepEqual(pending.params, [['CHAT2LOCAL_WRITABLE_ROOT_0', '/private/tmp/not-created-yet']]);
 });
 
-test('Seatbelt worker launch fixes cwd and sets no process-count rlimit', () => {
+test('Seatbelt worker launch fixes cwd and sets no process-count rlimit', { skip: process.platform !== 'darwin' }, () => {
   const config = { ...loadConfig({ PATH: process.env.PATH }, 'darwin'), sandboxBackend: 'seatbelt' as const, nodeBinary: '/usr/local/bin/node' };
   const prelude = new Sandbox(config).codeLaunch('/tmp/scratch').args.find(a => a.includes('ulimit'));
   assert.ok(prelude, 'expected an rlimit prelude');
@@ -272,7 +272,7 @@ test('Seatbelt worker launch fixes cwd and sets no process-count rlimit', () => 
   assert.match(prelude!, /ulimit -n /);
 });
 
-test('Seatbelt code worker gets a scratch-only writable root and no project access', () => {
+test('Seatbelt code worker gets a scratch-only writable root and no project access', { skip: process.platform !== 'darwin' }, () => {
   const config = { ...loadConfig({ PATH: process.env.PATH }, 'darwin'), sandboxBackend: 'seatbelt' as const,
     nodeBinary: '/usr/local/bin/node', workspace: '/Users/op/project' };
   const launch = new Sandbox(config).codeLaunch('/tmp/scratch');

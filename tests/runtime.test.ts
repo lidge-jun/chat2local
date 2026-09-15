@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, rename , realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Runtime } from '../src/runtime.js';
@@ -9,7 +9,7 @@ import { schemas } from '../src/tools.js';
 import { setup, PROJECT_ROOT } from '../bin/setup.js';
 
 async function fixture(t: any, writable = false) {
-  const base = await mkdtemp(join(tmpdir(), 'chat2local-runtime-'));
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-runtime-')));
   const root = join(base, 'project'); await mkdir(root); await writeFile(join(root, 'a.ts'), 'const answer = 42;\n');
   const runtime = await Runtime.create({ ...loadConfig({}), workspace: root, stateDir: join(base, 'state'), allowWrite: writable, allowAside: false });
   t.after(async () => { await runtime.close(); await rm(base, { recursive: true, force: true }); });

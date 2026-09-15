@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile , realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -9,7 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const enabled = process.env.CHAT2LOCAL_BUNDLE_TESTS === '1';
 for (const restricted of [false, true]) {
   test(`standalone bundle initializes without node_modules; restricted=${restricted}`, { skip: !enabled, timeout: 15000 }, async t => {
-    const base = await mkdtemp(join(tmpdir(), 'chat2local-bundle-'));
+    const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-bundle-')));
     const project = join(base, 'project'); await mkdir(project);
     await writeFile(join(project, 'example.txt'), 'bundle input');
     const entry = join(base, 'chat2local.mjs');

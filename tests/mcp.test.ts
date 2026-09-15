@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm , realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 async function fixture(t: any) {
-  const base = await mkdtemp(join(tmpdir(), 'chat2local-mcp-'));
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-mcp-')));
   const root = join(base, 'project'); await mkdir(root); await writeFile(join(root, 'example.txt'), 'hello MCP');
 
   const env = { PATH: process.env.PATH!, HOME: base, CHAT2LOCAL_ALLOW_WRITE: '0', CHAT2LOCAL_ALLOW_ASIDE: '0', CHAT2LOCAL_WORKSPACE: root, CHAT2LOCAL_STATE_DIR: join(base, 'state') };
