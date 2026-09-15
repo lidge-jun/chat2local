@@ -12,8 +12,11 @@ async function fixture(t: any) {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-docker-')));
   const root = join(base, 'project'); await mkdir(root); await writeFile(join(root, 'a.ts'), 'original');
   await writeFile(join(root, '.env'), 'FAKE_FIXTURE_SECRET=must-not-copy');
+  // Setting workerImage alone is no longer sufficient: the backend is selected
+  // explicitly, so the fixture must request Docker rather than inherit 'none'.
   const runtime = await Runtime.create({ ...loadConfig({}), workspace: root, stateDir: join(base, 'state'),
-    allowWrite: true, allowAside: false, workerImage: process.env.CHAT2LOCAL_TEST_IMAGE || 'node:22-alpine' });
+    allowWrite: true, allowAside: false, sandboxBackend: 'docker',
+    workerImage: process.env.CHAT2LOCAL_TEST_IMAGE || 'node:22-alpine' });
   t.after(async () => { await runtime.close(); await rm(base, { recursive: true, force: true }); });
   const open = await runtime.invoke('session_open', {}) as any;
   const session_id = open.session.id;
