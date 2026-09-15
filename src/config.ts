@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { accessSync, constants } from 'node:fs';
+import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
+import { accessSync, constants, realpathSync } from 'node:fs';
 
 /**
  * Execution backend for code mode and shell commands.
@@ -29,6 +29,8 @@ export interface Config {
   nodeBinary?: string;
   asideBinary: string;
   asidePermission: 'guard' | 'full-access';
+  /** Optional CodexClaw payload entry invoked by the privileged native adapter. */
+  codexclawEntry?: string;
 }
 
 /** Personal defaults are intentional; explicit operator restrictions always win. */
@@ -80,12 +82,60 @@ export function selectBackend(env: NodeJS.ProcessEnv, platform: string, hasNode:
   return 'none';
 }
 
+/**
+ * Resolve the CodexClaw payload, refusing any entry the model can rewrite.
+ *
+ * codexclaw_native executes this file on the host, outside the sandbox, with the
+ * operator's own privileges. The workspace is simultaneously writable through
+ * `write_file`. So an entry located inside the workspace is not a privileged
+ * adapter at all: the model can rewrite the payload and then ask for it to be
+ * executed, turning a scoped file write into arbitrary host code execution.
+ * That path was demonstrated end to end, not merely suspected.
+ *
+ * `aside_native` avoids this by construction because its binary is pinned outside
+ * the source tree. The same rule is enforced here rather than left to convention:
+ * the entry must live outside the workspace, and the operator must name it. There
+ * is deliberately no in-workspace auto-discovery, because a discovered path is
+ * exactly the path an attacker can create.
+ */
+export function resolveCodexclawEntry(env: NodeJS.ProcessEnv, workspace: string): string | undefined {
+  const configured = env.CHAT2LOCAL_CODEXCLAW_ENTRY;
+  if (!configured) return undefined;
+  const entry = resolve(configured);
+  const realEntry = realpathOrSelf(entry);
+  const realWorkspace = realpathOrSelf(workspace);
+  // BOTH the named path and its resolved target must be outside the workspace.
+  // Checking only the target would accept a symlink sitting at a model-writable
+  // path: resolution happens once at startup, but the operator would be relying on
+  // a link the model can replace, and the next restart resolves the replacement.
+  for (const candidate of [entry, realEntry]) {
+    if (candidate === realWorkspace || candidate === workspace || within(realWorkspace, candidate) || within(workspace, candidate))
+      throw new Error('CHAT2LOCAL_CODEXCLAW_ENTRY must live outside the writable workspace; '
+        + 'an entry the model can rewrite with write_file is arbitrary host execution, not an adapter');
+  }
+  try { accessSync(realEntry, constants.R_OK); } catch {
+    throw new Error('CHAT2LOCAL_CODEXCLAW_ENTRY is not readable: ' + entry);
+  }
+  return realEntry;
+}
+
+function realpathOrSelf(path: string): string {
+  try { return realpathSync.native(path); } catch { return path; }
+}
+
+/** True when `path` is inside `root`, using a separator-aware prefix test. */
+function within(root: string, path: string): boolean {
+  const base = root.endsWith(sep) ? root : root + sep;
+  return path.startsWith(base);
+}
+
 /** Only the operator's environment controls privileges, never tool arguments. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): Config {
   const workspace = resolve(env.CHAT2LOCAL_WORKSPACE || env.CODEX_MCP_WORKSPACE || process.cwd());
   const nodeBinary = env.CHAT2LOCAL_NODE_BINARY
     ? resolveOnPath(env.CHAT2LOCAL_NODE_BINARY, env)
     : resolveOnPath('node', env) || resolveOnPath('bun', env);
+  const codexclawEntry = resolveCodexclawEntry(env, workspace);
   return {
     workspace,
     stateDir: resolve(env.CHAT2LOCAL_STATE_DIR || join(homedir(), '.chat2local', 'state')),
@@ -97,6 +147,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: strin
     nodeBinary,
     asideBinary: env.CHAT2LOCAL_ASIDE_BINARY || 'aside',
     asidePermission: nativePermission(env.CHAT2LOCAL_ASIDE_PERMISSION),
+    codexclawEntry,
   };
 }
 

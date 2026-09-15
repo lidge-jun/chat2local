@@ -53,11 +53,14 @@ export class Runtime {
       sandbox_backend: backend,
       code_mode_configured: configured, worker_image: this.config.workerImage || null,
       native_aside_enabled: this.config.allowAside, native_aside_is_sandboxed: false,
-      native_aside_permission: this.config.asidePermission, operator_mode: 'personal',
+      native_aside_permission: this.config.asidePermission,
+      codexclaw_native_enabled: Boolean(this.config.allowWrite && this.config.nodeBinary && this.config.codexclawEntry),
+      codexclaw_entry: this.config.codexclawEntry || null,
+      codexclaw_native_is_sandboxed: false, operator_mode: 'personal',
       isolated_commands: backend === 'seatbelt'
         ? 'Filtered snapshot copied into a scratch directory and run under macOS Seatbelt: no network, no access to the live project, no copy-back. Host tools on PATH remain visible and rlimits bound an honest runaway, not a determined attacker.'
         : 'Filtered snapshot, network disabled, no copy-back; dependencies must already be in the image',
-      batch_read_tools: batchReads, batch_write_tools: batchWrites.filter(t => t === 'write_file' ? this.config.allowWrite : this.config.allowAside),
+      batch_read_tools: batchReads, batch_write_tools: batchWrites.filter(t => t === 'write_file' ? this.config.allowWrite : t === 'aside_native' ? this.config.allowAside : this.config.allowWrite && Boolean(this.config.codexclawEntry)),
       code_api: ['await tools.list()', 'await tools.call(name, args)', 'await tools.map(items, async (item, index) => ..., concurrency)'],
       limits: LIMITS, live_backend_health_checked: false, instructions: INSTRUCTIONS };
   }
@@ -107,6 +110,11 @@ export class Runtime {
     }
     if (name === 'exec_command') return this.jobs.start(record.id, args.request_id, name, ctxInput,
       ctx => this.sandbox.command(workspace, args.command, args.timeout, ctx));
+    if (name === 'codexclaw_native') {
+      if (!this.config.allowWrite) throw new PolicyError('CodexClaw native adapter disabled because writes are disabled');
+      if (!this.config.nodeBinary || !this.config.codexclawEntry) throw new PolicyError('CodexClaw native adapter is not configured');
+      return this.jobs.start(record.id, args.request_id, name, ctxInput, ctx => this.codexclaw(args.args, args.timeout, workspace, ctx));
+    }
     if (name === 'aside_native' || name === 'aside_repl' || name === 'spawn_subagent') {
       if (!this.config.allowAside) throw new PolicyError('Privileged Aside adapter disabled by operator');
       let argv = args.args;
@@ -167,8 +175,8 @@ export class Runtime {
   }
 
   private async batchCall(sessionId: string, name: string, input: unknown, readOnly: boolean, ctx: JobContext): Promise<unknown> {
-    const names = [...batchReads, ...(!readOnly ? batchWrites.filter(t => t === 'write_file' ? this.config.allowWrite : this.config.allowAside) : [])];
-    if (name === '$list') return names.map(n => ({ name: n, description: n === 'aside_native' ? 'Privileged host Aside CLI argv; serial execution' : 'Use the corresponding MCP tool schema without session_id' }));
+    const names = [...batchReads, ...(!readOnly ? batchWrites.filter(t => t === 'write_file' ? this.config.allowWrite : t === 'aside_native' ? this.config.allowAside : this.config.allowWrite && Boolean(this.config.codexclawEntry)) : [])];
+    if (name === '$list') return names.map(n => ({ name: n, description: n === 'aside_native' ? 'Privileged host Aside CLI argv; serial execution' : n === 'codexclaw_native' ? 'Privileged CodexClaw cxc argv in the session project; serial execution' : 'Use the corresponding MCP tool schema without session_id' }));
     if (!(names as readonly string[]).includes(name)) throw new PolicyError(`Tool unavailable in this batch: ${name}`);
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Tool arguments must be an object');
     if ('session_id' in input || 'request_id' in input) throw new PolicyError('Session and request identity are supplied by the broker');
@@ -177,7 +185,30 @@ export class Runtime {
       const args = schemas.aside_native.parse({ ...input, session_id: sessionId, request_id: 'broker' });
       return this.native(args.args, args.timeout, (await this.session(sessionId)).workspace, ctx);
     }
+    if (name === 'codexclaw_native') {
+      const args = schemas.codexclaw_native.parse({ ...input, session_id: sessionId, request_id: 'broker' });
+      return this.codexclaw(args.args, args.timeout, (await this.session(sessionId)).workspace, ctx);
+    }
     return this.invoke(name as ToolName, { ...input, session_id: sessionId }, ctx.signal);
+  }
+
+  private codexclaw(args: string[], timeout: number, workspace: Workspace, ctx: JobContext) {
+    const op = this.nativeQueue.then(async () => {
+      if (!this.config.allowWrite) throw new PolicyError('CodexClaw native adapter disabled');
+      const entry = this.config.codexclawEntry;
+      if (!this.config.nodeBinary || !entry) throw new PolicyError('CodexClaw native adapter is not configured');
+      // Re-check immediately before exec, not only at startup. The payload lives on
+      // a filesystem the operator keeps using, and this adapter runs it unsandboxed
+      // with host privileges; a path that became writable-from-workspace after boot
+      // must not be executed just because it passed once.
+      if (within(this.config.workspace, entry)) throw new PolicyError('CodexClaw entry is inside the writable workspace; refusing to execute a payload the model can rewrite');
+      if (ctx.signal.aborted) throw new Error('Cancelled before CodexClaw execution');
+      const result = await runProcess(this.config.nodeBinary, [entry, ...args],
+        { cwd: workspace.root, env: backendEnv(true), timeout, signal: ctx.signal });
+      if (result.timed_out || result.cancelled || result.output_limited || result.exit_code !== 0) throw new Error('CodexClaw failed: '+JSON.stringify(result));
+      return result;
+    });
+    this.nativeQueue = op.catch(() => {}); return op;
   }
 
   private native(args: string[], timeout: number, workspace: Workspace, ctx: JobContext) {

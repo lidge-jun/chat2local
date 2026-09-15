@@ -27,6 +27,7 @@ export const schemas = {
   code_mode: z.object({ ...session, code, request_id: request, timeout }).strict(),
   exec_command: z.object({ ...session, command: z.string().min(1).max(20_000), request_id: request, timeout }).strict(),
   aside_native: z.object({ ...session, args: z.array(z.string().max(100_000)).min(1).max(32).describe('Exact Aside CLI argv, no shell. Privileged personal default; operator may disable it.'), request_id: request, timeout }).strict(),
+  codexclaw_native: z.object({ ...session, args: z.array(z.string().max(20_000)).min(1).max(32).describe('Exact CodexClaw cxc argv, without shell interpolation. Runs against the session project.'), request_id: request, timeout }).strict(),
   aside_repl: z.object({ ...session, code: z.string().min(1).max(100_000), account: z.string().min(1).max(100).optional(), host: z.string().min(1).max(100).optional(), request_id: request, timeout }).strict(),
   spawn_subagent: z.object({ ...session, prompt: z.string().min(1).max(100_000), model: z.string().min(1).max(200).optional(), request_id: request, timeout }).strict(),
   job_get: z.object({ ...session, job_id: z.string().uuid(), cursor: z.number().int().min(0).default(0), wait_ms: z.number().int().min(0).max(10_000).default(0) }).strict(),
@@ -48,6 +49,7 @@ export const descriptions: Record<ToolName, string> = {
   code_mode: 'Run tool orchestration JavaScript with operator-enabled write/native capabilities. May modify files or act externally; obtain approval for the whole batch. Returns job_id.',
   exec_command: 'Run a shell command ONLY inside the OS sandbox on a filtered source snapshot. No unsandboxed shell, network, secrets or live writable project. No automatic copy-back. Returns job_id.',
   aside_native: 'Invoke exact Aside CLI argv without shell interpolation. This is a PRIVILEGED HOST adapter, not a sandbox. Enabled by default for personal use; serializes all Aside calls. Returns job_id.',
+  codexclaw_native: 'Invoke the configured CodexClaw cxc payload with exact argv in the session project. This is a PRIVILEGED HOST adapter and may mutate CodexClaw/project state. Returns job_id.',
   aside_repl: 'Use the optional privileged Aside adapter for direct browser JavaScript, retaining account/host options. Prefer direct calls for visual or single-step tasks. Returns job_id.',
   spawn_subagent: 'Optionally delegate an independent task to Aside exec with the operator-selected permission (personal default: full-access). Not the default coding route. Honors the operator disable switch. Returns job_id.',
   job_get: 'Get status, cursor-paged events, terminal result and errors for a job in this session. wait_ms <=10000. Available even if the source directory moved. Failed/interrupted work is never automatically replayed.',
@@ -55,6 +57,6 @@ export const descriptions: Record<ToolName, string> = {
 };
 
 export const readTools = new Set<ToolName>(['session_list', 'capabilities', 'read_file', 'list_dir', 'glob', 'grep', 'artifact_read', 'code_mode_read', 'job_get']);
-export const externalTools = new Set<ToolName>(['aside_native', 'aside_repl', 'spawn_subagent', 'code_mode']);
+export const externalTools = new Set<ToolName>(['aside_native', 'codexclaw_native', 'aside_repl', 'spawn_subagent', 'code_mode']);
 export const batchReads = ['read_file', 'list_dir', 'glob', 'grep'] as const;
-export const batchWrites = ['write_file', 'aside_native'] as const;
+export const batchWrites = ['write_file', 'aside_native', 'codexclaw_native'] as const;

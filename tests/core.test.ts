@@ -211,6 +211,45 @@ test('backend selection prefers the platform sandbox and never invents one', () 
   assert.throws(() => loadConfig({ ...withNode, CHAT2LOCAL_SANDBOX: 'vm' }, 'darwin'), /must be seatbelt, docker or none/);
 });
 
+test('CodexClaw entry must live outside the workspace, because write_file can rewrite it', async t => {
+  // Demonstrated escalation, not a hypothetical: codexclaw_native executes this
+  // file on the host outside the sandbox, while write_file can edit anything in
+  // the workspace. An in-workspace entry therefore upgrades a scoped file write
+  // into arbitrary host code execution.
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-cxc-')));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const workspace = join(base, 'workspace');
+  const inside = join(workspace, 'codexclaw', 'bin', 'codexclaw.mjs');
+  const outside = join(base, 'external', 'codexclaw.mjs');
+  await mkdir(join(workspace, 'codexclaw', 'bin'), { recursive: true });
+  await mkdir(join(base, 'external'), { recursive: true });
+  await writeFile(inside, 'console.log(1);');
+  await writeFile(outside, 'console.log(1);');
+
+  assert.throws(() => loadConfig({ PATH: process.env.PATH, CHAT2LOCAL_WORKSPACE: workspace,
+    CHAT2LOCAL_CODEXCLAW_ENTRY: inside }, 'darwin'), /outside the writable workspace/);
+
+  // An external entry is accepted.
+  assert.equal(loadConfig({ PATH: process.env.PATH, CHAT2LOCAL_WORKSPACE: workspace,
+    CHAT2LOCAL_CODEXCLAW_ENTRY: outside }, 'darwin').codexclawEntry, await realpath(outside));
+
+  // A symlink placed in the workspace must not smuggle an "external" target past
+  // the check, and an external symlink must resolve to its real location.
+  const link = join(workspace, 'link.mjs');
+  await symlink(outside, link);
+  assert.throws(() => loadConfig({ PATH: process.env.PATH, CHAT2LOCAL_WORKSPACE: workspace,
+    CHAT2LOCAL_CODEXCLAW_ENTRY: link }, 'darwin'), /outside the writable workspace/);
+});
+
+test('CodexClaw adapter stays disabled unless the operator names an entry', () => {
+  // There is no auto-discovery: a discovered path is exactly the path an attacker
+  // can create inside a directory the model can already write to.
+  const config = loadConfig({ PATH: process.env.PATH }, 'darwin');
+  assert.equal(config.codexclawEntry, undefined);
+  assert.throws(() => loadConfig({ PATH: process.env.PATH,
+    CHAT2LOCAL_CODEXCLAW_ENTRY: '/nonexistent/codexclaw.mjs' }, 'darwin'), /not readable/);
+});
+
 test('Seatbelt profile denies by default, scopes writes and never opts into the network', () => {
   const { policy, params } = buildSeatbeltProfile({ readableRoots: ['/tmp/read'], writableRoots: ['/tmp/write'] });
   assert.match(policy, /^\(version 1\)/);
