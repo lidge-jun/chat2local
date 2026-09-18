@@ -5,6 +5,8 @@ import { LIMITS } from './config.js';
 
 export interface SessionRecord {
   id: string; project: string; title: string; created_at: string; checkpoint: string;
+  /** Optional so records written by earlier versions still load. */
+  last_used_at?: string;
 }
 export type JobStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 export interface JobRecord {
@@ -58,7 +60,35 @@ export class Store {
         if (!(await lstat(p)).isDirectory() || await realpath(p) !== p) { await store.close(); throw new Error('Invalid state directory'); }
       }
     }
+    try { await store.sweepTemporaries(); } catch (e) { await store.close(); throw e; }
     return store;
+  }
+
+  /**
+   * Remove this writer's own interrupted `save()` temporaries.
+   *
+   * A kill between `open(temp)` and `rename()` leaves `.<uuid>.tmp` behind
+   * forever: nothing reads it, nothing counts it, and it never expires. The
+   * runtime lock is already held here, so no other runtime owns these files, and
+   * the pattern matches only the name `save()` constructs.
+   */
+  private async sweepTemporaries() {
+    // Exactly what randomUUID() produces: version 4, RFC 4122 variant. A looser
+    // pattern matches names this writer cannot create, which means someone else's
+    // file. Only 'sessions' and 'jobs' are written through save(), so a matching
+    // name anywhere else is outside this writer's namespace and is left alone.
+    const temporary = /^\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/;
+    for (const kind of ['sessions', 'jobs'] as const) {
+      const dir = join(this.root, kind);
+      for (const name of await readdir(dir)) {
+        if (!temporary.test(name)) continue;
+        const path = join(dir, name);
+        // A symlink or a hardlinked file is not something this writer created.
+        const st = await lstat(path).catch(() => undefined);
+        if (!st || !st.isFile() || st.nlink !== 1) continue;
+        await unlink(path).catch(e => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; });
+      }
+    }
   }
 
   async read<T>(kind: 'sessions' | 'jobs', id: string): Promise<T> {
@@ -83,10 +113,28 @@ export class Store {
     return op;
   }
 
+  /** Deleting a record is how retention works; a missing file is already the goal. */
+  delete(kind: 'sessions' | 'jobs', id: string): Promise<void> {
+    const op = this.serial.then(async () => {
+      if (this.closed) throw new Error('Store closed');
+      await unlink(join(this.root, kind, `${validId(id)}.json`))
+        .catch(e => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; });
+    });
+    this.serial = op.catch(() => {});
+    return op;
+  }
+
+  /**
+   * Load every record.
+   *
+   * This used to refuse to load a journal at capacity, which left the operator
+   * with no way back: the runtime that wrote the 512th record could not start
+   * again to prune it. Retention now belongs to the components that understand
+   * which records are disposable — `Jobs` and `Runtime` — and the loader just
+   * loads.
+   */
   async list<T>(kind: 'sessions' | 'jobs'): Promise<T[]> {
     const names = (await readdir(join(this.root, kind))).filter(x => /^[a-f0-9-]{36}\.json$/.test(x));
-    const max = kind === 'jobs' ? LIMITS.jobs : LIMITS.sessions;
-    if (names.length > max) throw new Error('Journal capacity exceeded; archive old state while runtime is stopped');
     return Promise.all(names.map(name => this.read<T>(kind, name.slice(0, -5))));
   }
 
