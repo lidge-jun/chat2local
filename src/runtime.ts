@@ -5,11 +5,32 @@ import { basename, relative } from 'node:path';
 import { LIMITS, type Config } from './config.js';
 import { Workspace, within, globRegex, PolicyError, sha256 } from './policy.js';
 import { Store, type SessionRecord } from './store.js';
-import { Jobs, type JobContext } from './jobs.js';
+import { Jobs, CleanupError, type JobContext } from './jobs.js';
 import { Sandbox } from './sandbox.js';
-import { backendEnv, runProcess } from './process.js';
+import { backendEnv, runProcess, type ProcessResult } from './process.js';
 import { INSTRUCTIONS } from './instructions.js';
 import { schemas, type ToolName, batchReads, batchWrites } from './tools.js';
+
+/**
+ * The Aside CLI announces a session it created on the FIRST line of stderr,
+ * before the agent it launched produces anything.
+ *
+ * That ordering is the whole security argument. The model controls `aside_native`
+ * argv and `aside_repl` code, so any text it can place in the output stream must
+ * not be able to name a session id: matching exactly the first line, with no
+ * `m` flag and no stdout, means model-authored text cannot precede the CLI's own
+ * banner. A parse miss reaps nothing, so every surprise — a reworded banner,
+ * JSON output, an unexpected warning line — fails toward doing nothing rather
+ * than toward stopping a session this runtime does not own.
+ */
+const CREATED_SESSION = /^created new session: ([A-Za-z0-9]{8,64})$/;
+const ANSI = /\u001B\[[0-9;]*[A-Za-z]/g;
+export interface SessionReap { id: string; stopped: boolean; error?: string }
+
+export function createdSession(stderr: string): string | undefined {
+  const first = stderr.replace(ANSI, '').split('\n', 1)[0].trim();
+  return CREATED_SESSION.exec(first)?.[1];
+}
 
 export class Runtime {
   readonly jobs: Jobs;
@@ -18,6 +39,11 @@ export class Runtime {
   private sessions = new Map<string, SessionRecord>();
   private nativeQueue: Promise<unknown> = Promise.resolve();
   private sessionQueue: Promise<unknown> = Promise.resolve();
+  private evictedSessions = 0;
+  /** When each session record was last written, so the throttle cannot starve. */
+  private persistedAt = new Map<string, number>();
+  /** Tool calls currently resolving against each session, by session id. */
+  private inFlight = new Map<string, number>();
 
   private constructor(readonly config: Config, readonly workspace: Workspace, readonly store: Store) {
     this.jobs = new Jobs(store); this.sandbox = new Sandbox(config);
@@ -29,14 +55,86 @@ export class Runtime {
     const runtime = new Runtime(config, workspace, store);
     try {
       for (const session of await store.list<SessionRecord>('sessions')) runtime.sessions.set(session.id, session);
-      await runtime.jobs.init(); return runtime;
+      await runtime.jobs.init();
+      // The loader no longer refuses an over-capacity directory, so retention has
+      // to run at startup too, not only when the next session is opened.
+      await runtime.pruneSessions(LIMITS.sessions);
+      return runtime;
     } catch (e) { await store.close(); throw e; }
   }
 
   private sessionRecord(id: string): SessionRecord {
     const record = this.sessions.get(id);
     if (!record) throw new Error('Unknown session; use session_open');
+    this.touch(record);
     return record;
+  }
+
+  /**
+   * Record use for least-recently-used retention.
+   *
+   * Persisted at most once a minute per session: retention only needs to know
+   * which sessions are cold, and a journal write per tool call would be a real
+   * cost for no extra accuracy.
+   */
+  private touch(record: SessionRecord) {
+    record.last_used_at = new Date().toISOString();
+    // Throttled against the last WRITE, not the last use. Throttling against the
+    // last use means a conversation busier than once a minute never persists at
+    // all and looks stale after a restart.
+    const written = this.persistedAt.get(record.id) ?? 0;
+    if (Date.now() - written < 60_000) return;
+    this.persistedAt.set(record.id, Date.now());
+    void this.writeSession(record.id);
+  }
+
+  /**
+   * The one path that writes a session record.
+   *
+   * It queues behind session retention and re-reads the live record at write
+   * time rather than persisting a captured object. Both properties matter: a
+   * delayed use-timestamp write must not overwrite a checkpoint saved after it,
+   * and it must not recreate a record that retention has already deleted.
+   */
+  private writeSession(id: string): Promise<unknown> {
+    const op = this.sessionQueue.then(() => {
+      const live = this.sessions.get(id);
+      return live ? this.store.save('sessions', live) : undefined;
+    });
+    this.sessionQueue = op.catch(() => {});
+    return op;
+  }
+
+  /**
+   * Evict least-recently-used sessions, not oldest-created ones: a live
+   * conversation can hold a session that was opened days ago, while a session
+   * opened this morning and abandoned is the disposable one.
+   *
+   * Jobs owned by an evicted session are not deleted here; they age out through
+   * the job ring, and `jobs.get` already refuses a session that no longer matches.
+   */
+  private async pruneSessions(target: number, exempt?: string) {
+    const order = [...this.sessions.values()].sort((a, b) =>
+      (a.last_used_at ?? a.created_at).localeCompare(b.last_used_at ?? b.created_at));
+    for (const record of order) {
+      if (this.sessions.size <= target) break;
+      // The session this prune is making room for is never its own victim.
+      if (record.id === exempt) continue;
+      // Never evict a session whose work is still in flight: job_get and
+      // job_cancel both resolve the session first, so evicting it would leave a
+      // running job unobservable and uncancellable.
+      if (this.jobs.hasRunning(record.id)) continue;
+      // Nor one with a call already in progress, which jobs.hasRunning() cannot
+      // see until that call has registered its job.
+      if (this.inFlight.has(record.id)) continue;
+      // A record that cannot be deleted stays, and retention tries again later.
+      // Failing here would reject the session_open whose record is already saved.
+      try { await this.store.delete('sessions', record.id); } catch { continue; }
+      this.sessions.delete(record.id);
+      this.workspaces.delete(record.id);
+      this.persistedAt.delete(record.id);
+      this.evictedSessions++;
+    }
   }
 
   private async session(id: string) {
@@ -57,6 +155,9 @@ export class Runtime {
       codexclaw_native_enabled: Boolean(this.config.allowWrite && this.config.nodeBinary && this.config.codexclawEntry),
       codexclaw_entry: this.config.codexclawEntry || null,
       codexclaw_native_is_sandboxed: false, operator_mode: 'personal',
+      native_aside_reaps_sessions: this.config.allowAside && this.config.asideReapSessions,
+      job_journal: this.jobs.stats(),
+      session_journal: { retained: this.sessions.size, evicted: this.evictedSessions, capacity: LIMITS.sessions },
       isolated_commands: backend === 'seatbelt'
         ? 'Filtered snapshot copied into a scratch directory and run under macOS Seatbelt: no network, no access to the live project, no copy-back. Host tools on PATH remain visible and rlimits bound an honest runaway, not a determined attacker.'
         : 'Filtered snapshot, network disabled, no copy-back; dependencies must already be in the image',
@@ -72,13 +173,23 @@ export class Runtime {
       const record = this.sessionRecord(args.session_id);
       return { session: record, jobs: this.jobs.list(record.id), workspace_validated: false, ...this.capabilities() };
     }
-    if (this.sessions.size >= LIMITS.sessions) throw new Error('Session limit reached; resume an existing session');
     const project = await this.workspace.path(args.project);
     const workspace = await Workspace.create(project, this.config.allowWrite);
+    const now = new Date().toISOString();
     const record: SessionRecord = { id: randomUUID(), project: workspace.root, title: args.title,
-      created_at: new Date().toISOString(), checkpoint: '' };
+      created_at: now, checkpoint: '', last_used_at: now };
+    // Persist the replacement FIRST, then retire cold records. Pruning ahead of a
+    // save that can still fail means a rejected open costs the operator a good
+    // session, which is the opposite of what retention is for. Capacity is a
+    // retention target, so briefly holding one extra record is fine; refusing to
+    // open a session is not.
     await this.store.save('sessions', record);
     this.sessions.set(record.id, record); this.workspaces.set(record.id, workspace);
+    this.persistedAt.set(record.id, Date.now());
+    // Capacity is a target, not a wall. When every existing session is protected
+    // the journal holds one more for now and the next open tries again;
+    // protection is transient, while refusing to open a session is not.
+    if (this.sessions.size > LIMITS.sessions) await this.pruneSessions(LIMITS.sessions, record.id);
     return { session: record, ...this.capabilities() };
   }
 
@@ -93,10 +204,25 @@ export class Runtime {
     // Job control and checkpoints are journal operations, not source access.
     // Moving/deleting a project must never make a running job uncancellable.
     const record = this.sessionRecord(args.session_id);
+    // A call that has resolved its session but has not registered its job yet is
+    // invisible to jobs.hasRunning(). Counting it here, and releasing it only when
+    // the call returns, is what stops retention from evicting a session out from
+    // under work that is already admitted.
+    this.inFlight.set(record.id, (this.inFlight.get(record.id) ?? 0) + 1);
+    try { return await this.dispatch(name, args, record, signal); }
+    finally {
+      const remaining = (this.inFlight.get(record.id) ?? 1) - 1;
+      if (remaining > 0) this.inFlight.set(record.id, remaining); else this.inFlight.delete(record.id);
+    }
+  }
+
+  private async dispatch(name: ToolName, args: any, record: SessionRecord, signal: AbortSignal): Promise<unknown> {
     if (name === 'capabilities') return this.capabilities();
     if (name === 'session_checkpoint') {
       const updated = { ...record, checkpoint: args.summary };
-      await this.store.save('sessions', updated); this.sessions.set(record.id, updated); return updated;
+      this.sessions.set(record.id, updated);
+      await this.writeSession(record.id);
+      return updated;
     }
     if (name === 'job_get') return this.jobs.get(record.id, args.job_id, args.cursor, args.wait_ms);
     if (name === 'job_cancel') return this.jobs.cancel(record.id, args.job_id);
@@ -123,9 +249,17 @@ export class Runtime {
         argv.push(args.code);
       }
       if (name === 'spawn_subagent') {
-        argv = ['exec', '--permission', this.config.asidePermission]; if (args.model) argv.push('-m', args.model); argv.push(args.prompt);
+        argv = ['exec', '--permission', this.config.asidePermission]; if (args.model) argv.push('-m', args.model);
+        // The argument terminator is what stops a model-authored prompt from being
+        // read as CLI options. Without it a prompt beginning with a dash can pick
+        // flags — including, on some builds, a flag naming an existing session.
+        argv.push('--', args.prompt);
       }
-      return this.jobs.start(record.id, args.request_id, name, ctxInput, ctx => this.native(argv, args.timeout, workspace, ctx));
+      // Ownership is asserted here, by the call site that built the argv, and is
+      // never inferred from output. Only spawn_subagent is a runtime-constructed,
+      // one-shot session, so only it is reaped.
+      return this.jobs.start(record.id, args.request_id, name, ctxInput,
+        ctx => this.native(argv, args.timeout, workspace, ctx, name === 'spawn_subagent'));
     }
     throw new Error('Unsupported tool');
   }
@@ -183,7 +317,7 @@ export class Runtime {
     if (ctx.signal.aborted) throw new Error('Cancelled');
     if (name === 'aside_native') {
       const args = schemas.aside_native.parse({ ...input, session_id: sessionId, request_id: 'broker' });
-      return this.native(args.args, args.timeout, (await this.session(sessionId)).workspace, ctx);
+      return this.native(args.args, args.timeout, (await this.session(sessionId)).workspace, ctx, false);
     }
     if (name === 'codexclaw_native') {
       const args = schemas.codexclaw_native.parse({ ...input, session_id: sessionId, request_id: 'broker' });
@@ -211,16 +345,70 @@ export class Runtime {
     this.nativeQueue = op.catch(() => {}); return op;
   }
 
-  private native(args: string[], timeout: number, workspace: Workspace, ctx: JobContext) {
+  private native(args: string[], timeout: number, workspace: Workspace, ctx: JobContext, owned: boolean) {
     const op = this.nativeQueue.then(async () => {
       if (!this.config.allowAside) throw new PolicyError('Privileged Aside adapter disabled');
       if (ctx.signal.aborted) throw new Error('Cancelled before native execution');
-      const result = await runProcess(this.config.asideBinary, args,
-        { cwd: workspace.root, env: backendEnv(true), timeout, signal: ctx.signal });
-      if (result.timed_out || result.cancelled || result.output_limited || result.exit_code !== 0) throw new Error(`Aside failed: ${JSON.stringify(result)}`);
-      return result;
+      // The banner is observed as it arrives, because a rejected runProcess never
+      // returns the buffered stderr and the session it announced would then be
+      // unreachable.
+      let banner = '';
+      const observe = (chunk: Buffer) => { if (banner.length < 512) banner += chunk.toString('utf8'); };
+      let result: ProcessResult;
+      try {
+        result = await runProcess(this.config.asideBinary, args,
+          { cwd: workspace.root, env: backendEnv(true), timeout, signal: ctx.signal, onStderr: observe });
+      } catch (e) {
+        const orphan = createdSession(banner);
+        if (owned && orphan && this.config.asideReapSessions) {
+          const stop = await this.stopSession(orphan);
+          // Losing the id here would leave a session nobody knows to clean up.
+          if (!stop.stopped) throw new CleanupError(`Aside session ${stop.id} was created but could not be `
+            + `stopped: ${stop.error}. Stop it manually. The run itself failed: `
+            + `${e instanceof Error ? e.message : String(e)}`, { session: stop });
+        }
+        throw e;
+      }
+      const created = createdSession(banner || result.stderr);
+      // A killed or timed-out CLI leaves a session that is abandoned by
+      // definition, so the same reap covers success, timeout and cancellation.
+      const reap = owned && created !== undefined && this.config.asideReapSessions;
+      const stop = reap ? await this.stopSession(created!) : undefined;
+      const payload = stop ? { ...result, session: stop }
+        : created ? { ...result, session_hint: created } : result;
+      const ranBadly = result.timed_out || result.cancelled || result.output_limited || result.exit_code !== 0;
+      // Cleanup failure is checked first so the combined case still carries the
+      // payload on the record instead of only inside an error string.
+      if (stop && !stop.stopped)
+        throw new CleanupError(`Aside session ${stop.id} could not be stopped: ${stop.error}. `
+          + `Stop it manually before reusing this request_id.${ranBadly ? ' The run itself also failed.' : ''}`, payload);
+      if (ranBadly) throw new Error(`Aside failed: ${JSON.stringify(payload)}`);
+      return payload;
     });
     this.nativeQueue = op.catch(() => {}); return op;
+  }
+
+  /**
+   * Stop a session this runtime created.
+   *
+   * Deliberately runs without the job's AbortSignal and on its own timeout: a
+   * cancelled job is exactly the case where the session most needs releasing.
+   * Already serialized, because every caller is inside the native queue.
+   */
+  private async stopSession(id: string): Promise<SessionReap> {
+    try {
+      const result = await runProcess(this.config.asideBinary, ['session', 'stop', id],
+        { cwd: this.workspace.root, env: backendEnv(true), timeout: 30_000 });
+      // Exit 0 alone is not success for this CLI: a policy denial is reported in
+      // the output while the process still exits cleanly. `stopped` therefore
+      // means "the CLI reported no failure", which is the strongest postcondition
+      // the CLI offers, and nothing more.
+      const denied = /is blocked by policy|permission denied/i.test(result.stdout + result.stderr);
+      if (result.exit_code === 0 && !result.timed_out && !result.output_limited && !denied) return { id, stopped: true };
+      return { id, stopped: false, error: (result.stderr || result.stdout || `exit ${result.exit_code}`).slice(0, 500) };
+    } catch (e) {
+      return { id, stopped: false, error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   async close() { await this.jobs.shutdown(); await this.nativeQueue; await this.sessionQueue; await this.store.close(); }

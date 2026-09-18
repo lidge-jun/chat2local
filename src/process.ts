@@ -6,6 +6,8 @@ export interface ProcessOptions {
   input?: string; keepStdin?: boolean;
   onStart?: (child: ChildProcessWithoutNullStreams) => void;
   onStdout?: (chunk: Buffer) => void;
+  /** Observe stderr as it arrives. A rejected run discards the buffered copy. */
+  onStderr?: (chunk: Buffer) => void;
 }
 export interface ProcessResult {
   stdout: string; stderr: string; exit_code: number | null; signal: NodeJS.Signals | null;
@@ -53,6 +55,8 @@ export async function runProcess(binary: string, args: string[], options: Proces
     child.stderr.on('data', (chunk: Buffer) => {
       outputBytes += chunk.length;
       if (outputBytes > LIMITS.processBytes) { output_limited = true; stop(); return; }
+      // An observer must never fail the run it is only watching.
+      if (options.onStderr) { try { options.onStderr(chunk); } catch { /* observation only */ } }
       stderr = Buffer.concat([stderr, chunk]).subarray(0, 64 * 1024);
     });
     child.stdin.on('error', e => { if ((e as NodeJS.ErrnoException).code !== 'EPIPE') { failure = e; stop(); } });
