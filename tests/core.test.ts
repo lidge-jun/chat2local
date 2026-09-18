@@ -222,6 +222,19 @@ test('an interrupted journal write leaves no permanent temporary file', async t 
   assert.equal(await readFile(otherNamespace, 'utf8'), 'not ours either');
 });
 
+test('every state subdirectory is a real directory, including the sandbox scratch root', async t => {
+  const { base } = await fixture(t);
+  const path = join(base, 'state');
+  const opened = await Store.open(path); await opened.close();
+  // Sandbox.code mkdirs workers/<uuid> recursively, which follows a symlink at
+  // 'workers' unless Store validates that name like the journal directories.
+  assert.equal((await lstat(join(path, 'workers'))).isDirectory(), true);
+  const elsewhere = join(base, 'elsewhere'); await mkdir(elsewhere);
+  await rm(join(path, 'workers'), { recursive: true });
+  await symlink(elsewhere, join(path, 'workers'));
+  await assert.rejects(() => Store.open(path), /Invalid state directory/);
+});
+
 test('process exit status distinguishes failure, timeout and cancellation', async () => {
   const error = await runProcess(process.execPath, ['-e', 'console.error("problem");process.exit(7)'], { timeout: 2000, env: {} });
   assert.equal(error.exit_code, 7); assert.match(error.stderr, /problem/);

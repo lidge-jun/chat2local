@@ -132,7 +132,7 @@ async function asideFixture(t: any, body: string, reap = true) {
     allowWrite: false, allowAside: true, asideBinary: binary, asideReapSessions: reap });
   t.after(async () => { await runtime.close(); await rm(base, { recursive: true, force: true }); });
   const open = await runtime.invoke('session_open', {}) as { session: { id: string } };
-  const run = async (tool: 'spawn_subagent' | 'aside_native', input: Record<string, unknown>) => {
+  const run = async (tool: 'spawn_subagent' | 'aside_native' | 'aside_repl', input: Record<string, unknown>) => {
     const started = await runtime.invoke(tool, { session_id: open.session.id, request_id: 'native', ...input }) as JobView;
     return runtime.invoke('job_get', { session_id: open.session.id, job_id: started.id, wait_ms: 10_000 }) as Promise<JobView>;
   };
@@ -156,6 +156,15 @@ test('a model-authored prompt cannot be read as CLI options', async t => {
   await run('spawn_subagent', { prompt: '--session=victim and then do a thing' });
   // The terminator is what keeps a dash-leading prompt a prompt.
   assert.match(await argv(), /\[exec\]\[--permission\]\[full-access\]\[--\]\[--session=victim and then do a thing\]/);
+});
+
+test('model-authored repl code cannot be read as CLI options either', async t => {
+  const { run, argv } = await asideFixture(t, BANNER_FIRST);
+  await run('aside_repl', { code: '-1', account: 'acct', host: 'target' });
+  // Exact match: option order, the terminator as its own argv, and the code as the
+  // single trailing argument. Measured CLI behaviour is that repl accepts '--' and
+  // creates no session, so nothing is reaped here.
+  assert.equal(await argv(), '[repl][--account][acct][--host][target][--][-1]\n');
 });
 
 test('a cleanup failure after a failed run still keeps the output on the record', async t => {
@@ -247,6 +256,56 @@ test('a checkpoint survives a restart', async t => {
   t.after(() => second.close());
   const listed = await second.invoke('session_list', {}) as { sessions: Array<{ id: string; checkpoint: string }> };
   assert.equal(listed.sessions.find(s => s.id === open.session.id)?.checkpoint, 'keep this note');
+});
+
+test('retention skips a session with a call in flight, not only one with a running job', async t => {
+  // The suite's other retention test cannot see this guard: its session also has a
+  // running job, so hasRunning() would save it either way. This one isolates
+  // inFlight by starting no jobs at all, which means reaching pruneSessions
+  // directly. No public call keeps a session resolved without registering work.
+  const { runtime, session_id } = await fixture(t);
+  const protectedSession = await runtime.invoke('session_open', { title: 'protected' }) as { session: { id: string } };
+  const victim = await runtime.invoke('session_open', { title: 'victim' }) as { session: { id: string } };
+  const internals = runtime as unknown as {
+    sessions: Map<string, { id: string; last_used_at?: string }>;
+    inFlight: Map<string, number>;
+    pruneSessions(target: number, exempt?: string): Promise<void>;
+  };
+  // Coldest first, so the protected session is the one retention would reach for.
+  internals.sessions.get(protectedSession.session.id)!.last_used_at = '2020-01-01T00:00:00.000Z';
+  internals.sessions.get(victim.session.id)!.last_used_at = '2020-01-02T00:00:00.000Z';
+  internals.sessions.get(session_id)!.last_used_at = '2020-01-03T00:00:00.000Z';
+  internals.inFlight.set(protectedSession.session.id, 1);
+  await internals.pruneSessions(2, session_id);
+  assert.equal(internals.sessions.size, 2);
+  assert.ok(internals.sessions.has(protectedSession.session.id));
+  assert.equal(internals.sessions.has(victim.session.id), false);
+  assert.ok(internals.sessions.has(session_id));
+});
+
+test('a session is unresolvable the moment retention retires it, not when the unlink lands', async t => {
+  // The window this closes: a call that resolved the session between the guard
+  // check and the journal unlink used to register a job against a record already
+  // being deleted. Retirement is synchronous now, so the victim is gone before
+  // pruneSessions yields. Reverting to await-then-delete makes the call below
+  // succeed instead of throwing.
+  const { runtime, session_id } = await fixture(t);
+  const victim = await runtime.invoke('session_open', { title: 'victim' }) as { session: { id: string } };
+  const keeper = await runtime.invoke('session_open', { title: 'keeper' }) as { session: { id: string } };
+  const internals = runtime as unknown as {
+    sessions: Map<string, { id: string; last_used_at?: string }>;
+    pruneSessions(target: number, exempt?: string): Promise<void>;
+  };
+  internals.sessions.get(victim.session.id)!.last_used_at = '2020-01-01T00:00:00.000Z';
+  internals.sessions.get(keeper.session.id)!.last_used_at = '2020-01-02T00:00:00.000Z';
+  internals.sessions.get(session_id)!.last_used_at = '2020-01-03T00:00:00.000Z';
+  assert.equal(internals.sessions.size, 3);
+  const pending = internals.pruneSessions(2, session_id);
+  await assert.rejects(() => runtime.invoke('capabilities', { session_id: victim.session.id }), /Unknown session/);
+  await pending;
+  assert.equal(internals.sessions.has(victim.session.id), false);
+  assert.ok(internals.sessions.has(keeper.session.id));
+  assert.ok(internals.sessions.has(session_id));
 });
 
 test('model-authored argv is reported but never reaped', async t => {

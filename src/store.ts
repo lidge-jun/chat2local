@@ -49,13 +49,16 @@ export class Store {
     }
     const store = new Store(root);
     try {
-      for (const dir of ['sessions', 'jobs', 'snapshots']) {
+      // 'workers' belongs here even though save() never writes to it: Sandbox.code
+      // creates workers/<uuid> with mkdir recursive, which would happily follow a
+      // symlink planted at that name.
+      for (const dir of ['sessions', 'jobs', 'snapshots', 'workers']) {
         const p = join(root, dir); await mkdir(p, { mode: 0o700 });
       }
     } catch (e) {
       // Existing state directories are valid, but none may be redirected.
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') { await store.close(); throw e; }
-      for (const dir of ['sessions', 'jobs', 'snapshots']) {
+      for (const dir of ['sessions', 'jobs', 'snapshots', 'workers']) {
         const p = join(root, dir); await mkdir(p, { recursive: true, mode: 0o700 });
         if (!(await lstat(p)).isDirectory() || await realpath(p) !== p) { await store.close(); throw new Error('Invalid state directory'); }
       }
