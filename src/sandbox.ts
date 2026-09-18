@@ -155,7 +155,11 @@ export class Sandbox {
     call: (name: string, args: unknown, signal: AbortSignal) => Promise<unknown>): Promise<unknown> {
     const scratch = join(this.config.stateDir, 'workers', randomUUID());
     await mkdir(scratch, { recursive: true, mode: 0o700 });
-    const launch = this.codeLaunch(scratch);
+    // codeLaunch() validates the backend and can throw. It runs after the mkdir,
+    // so it needs its own guard or the scratch directory outlives the failure.
+    let launch: BackendLaunch;
+    try { launch = this.codeLaunch(scratch); }
+    catch (e) { await rm(scratch, { recursive: true, force: true }); throw e; }
     let child: ChildProcessWithoutNullStreams;
     const decoder = new StringDecoder('utf8');
     let buffer = '', calls = 0, active = 0, responseBytes = 0;
@@ -214,8 +218,10 @@ export class Sandbox {
     } finally {
       controller.abort(); ctx.signal.removeEventListener('abort', relayAbort);
       await Promise.allSettled(inflight);
-      if (launch.containerName) await this.cleanup(launch.containerName);
-      await rm(scratch, { recursive: true, force: true });
+      // An unconfirmed container must still be reported, but not at the price of
+      // leaking the scratch directory as well.
+      try { if (launch.containerName) await this.cleanup(launch.containerName); }
+      finally { await rm(scratch, { recursive: true, force: true }); }
     }
   }
 
@@ -226,9 +232,11 @@ export class Sandbox {
     const snapshot = join(base, 'source'), work = join(base, 'work');
     if (base.includes(',')) throw new Error('Sandbox snapshot path cannot contain a comma');
     await mkdir(snapshot, { recursive: true, mode: 0o755 });
-    if (backend === 'seatbelt') await mkdir(work, { recursive: true, mode: 0o700 });
     let launch: BackendLaunch | undefined;
     try {
+      // Inside the guard: a failure here would otherwise strand the base directory
+      // that the snapshot mkdir just created.
+      if (backend === 'seatbelt') await mkdir(work, { recursive: true, mode: 0o700 });
       const manifest = await workspace.snapshot(snapshot);
       ctx.log(`Snapshot: ${manifest.files} files, ${manifest.bytes} bytes; ${manifest.omitted} excluded entries`);
       launch = this.commandLaunch(snapshot, work, command);
