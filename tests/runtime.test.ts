@@ -249,6 +249,31 @@ test('a checkpoint survives a restart', async t => {
   assert.equal(listed.sessions.find(s => s.id === open.session.id)?.checkpoint, 'keep this note');
 });
 
+test('retention skips a session with a call in flight, not only one with a running job', async t => {
+  // The suite's other retention test cannot see this guard: its session also has a
+  // running job, so hasRunning() would save it either way. This one isolates
+  // inFlight by starting no jobs at all, which means reaching pruneSessions
+  // directly. No public call keeps a session resolved without registering work.
+  const { runtime, session_id } = await fixture(t);
+  const protectedSession = await runtime.invoke('session_open', { title: 'protected' }) as { session: { id: string } };
+  const victim = await runtime.invoke('session_open', { title: 'victim' }) as { session: { id: string } };
+  const internals = runtime as unknown as {
+    sessions: Map<string, { id: string; last_used_at?: string }>;
+    inFlight: Map<string, number>;
+    pruneSessions(target: number, exempt?: string): Promise<void>;
+  };
+  // Coldest first, so the protected session is the one retention would reach for.
+  internals.sessions.get(protectedSession.session.id)!.last_used_at = '2020-01-01T00:00:00.000Z';
+  internals.sessions.get(victim.session.id)!.last_used_at = '2020-01-02T00:00:00.000Z';
+  internals.sessions.get(session_id)!.last_used_at = '2020-01-03T00:00:00.000Z';
+  internals.inFlight.set(protectedSession.session.id, 1);
+  await internals.pruneSessions(2, session_id);
+  assert.equal(internals.sessions.size, 2);
+  assert.ok(internals.sessions.has(protectedSession.session.id));
+  assert.equal(internals.sessions.has(victim.session.id), false);
+  assert.ok(internals.sessions.has(session_id));
+});
+
 test('model-authored argv is reported but never reaped', async t => {
   const { run, argv } = await asideFixture(t, BANNER_FIRST);
   const result = await run('aside_native', { args: ['exec', 'anything'] });
