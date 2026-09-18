@@ -257,7 +257,9 @@ export class Runtime {
       let argv = args.args;
       if (name === 'aside_repl') {
         argv = ['repl']; if (args.account) argv.push('--account', args.account); if (args.host) argv.push('--host', args.host);
-        argv.push(args.code);
+        // Same terminator as spawn_subagent, after the options so neither loses its
+        // value. The code is model-authored and the schema allows a leading dash.
+        argv.push('--', args.code);
       }
       if (name === 'spawn_subagent') {
         argv = ['exec', '--permission', this.config.asidePermission]; if (args.model) argv.push('-m', args.model);

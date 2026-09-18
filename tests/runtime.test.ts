@@ -132,7 +132,7 @@ async function asideFixture(t: any, body: string, reap = true) {
     allowWrite: false, allowAside: true, asideBinary: binary, asideReapSessions: reap });
   t.after(async () => { await runtime.close(); await rm(base, { recursive: true, force: true }); });
   const open = await runtime.invoke('session_open', {}) as { session: { id: string } };
-  const run = async (tool: 'spawn_subagent' | 'aside_native', input: Record<string, unknown>) => {
+  const run = async (tool: 'spawn_subagent' | 'aside_native' | 'aside_repl', input: Record<string, unknown>) => {
     const started = await runtime.invoke(tool, { session_id: open.session.id, request_id: 'native', ...input }) as JobView;
     return runtime.invoke('job_get', { session_id: open.session.id, job_id: started.id, wait_ms: 10_000 }) as Promise<JobView>;
   };
@@ -156,6 +156,15 @@ test('a model-authored prompt cannot be read as CLI options', async t => {
   await run('spawn_subagent', { prompt: '--session=victim and then do a thing' });
   // The terminator is what keeps a dash-leading prompt a prompt.
   assert.match(await argv(), /\[exec\]\[--permission\]\[full-access\]\[--\]\[--session=victim and then do a thing\]/);
+});
+
+test('model-authored repl code cannot be read as CLI options either', async t => {
+  const { run, argv } = await asideFixture(t, BANNER_FIRST);
+  await run('aside_repl', { code: '-1', account: 'acct', host: 'target' });
+  // Exact match: option order, the terminator as its own argv, and the code as the
+  // single trailing argument. Measured CLI behaviour is that repl accepts '--' and
+  // creates no session, so nothing is reaped here.
+  assert.equal(await argv(), '[repl][--account][acct][--host][target][--][-1]\n');
 });
 
 test('a cleanup failure after a failed run still keeps the output on the record', async t => {
