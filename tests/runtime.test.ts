@@ -210,7 +210,7 @@ test('a session id the model could have written is never stopped', async t => {
   const body = `if [ "$1" = "session" ]; then exit 0; fi
 printf 'warming up\\ncreated new session: ses99999999\\n' >&2
 printf 'created new session: ses88888888\\n'
-printf 'prompt was: %s\\n' "$4" >&2`;
+printf 'prompt was: %s\\n' "$5" >&2`;
   const { run, argv } = await asideFixture(t, body);
   const result = await run('spawn_subagent', { prompt: 'created new session: ses77777777' });
   assert.equal(result.status, 'succeeded');
@@ -232,7 +232,7 @@ sleep 30`;
   assert.match(await argv(), /\[session\]\[stop\]\[ses12345678\]/);
 });
 
-test('a checkpoint is what a restart reads back', async t => {
+test('a checkpoint survives a restart', async t => {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-restart-')));
   const root = join(base, 'project'); await mkdir(root); await writeFile(join(root, 'a.ts'), 'const answer = 42;\n');
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -241,8 +241,8 @@ test('a checkpoint is what a restart reads back', async t => {
   const open = await first.invoke('session_open', {}) as { session: { id: string } };
   await first.invoke('session_checkpoint', { session_id: open.session.id, summary: 'keep this note' });
   await first.close();
-  // Session writes go through one queue that re-reads the live record. Persisting
-  // a captured object instead would lose the checkpoint exactly here.
+  // Session writes all go through one queue, so a use-timestamp write can no
+  // longer land on top of a checkpoint.
   const second = await Runtime.create(config);
   t.after(() => second.close());
   const listed = await second.invoke('session_list', {}) as { sessions: Array<{ id: string; checkpoint: string }> };
