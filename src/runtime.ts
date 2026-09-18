@@ -127,12 +127,23 @@ export class Runtime {
       // Nor one with a call already in progress, which jobs.hasRunning() cannot
       // see until that call has registered its job.
       if (this.inFlight.has(record.id)) continue;
-      // A record that cannot be deleted stays, and retention tries again later.
-      // Failing here would reject the session_open whose record is already saved.
-      try { await this.store.delete('sessions', record.id); } catch { continue; }
+      // Drop the record in the same tick as the checks above. Awaiting the unlink
+      // first would leave a window where a new call resolves this session and
+      // registers a job against a record retention is already retiring; that job
+      // would be unobservable and uncancellable. Removing it from memory first
+      // means a call arriving now is cleanly rejected with 'Unknown session'.
+      const live = this.sessions.get(record.id) ?? record;
       this.sessions.delete(record.id);
       this.workspaces.delete(record.id);
       this.persistedAt.delete(record.id);
+      try { await this.store.delete('sessions', record.id); }
+      catch {
+        // The record is still on disk, so put it back rather than losing it on the
+        // next restart. Retention tries again later; failing here would reject the
+        // session_open whose own record is already saved.
+        this.sessions.set(live.id, live);
+        continue;
+      }
       this.evictedSessions++;
     }
   }
