@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Workspace, sha256, globRegex, blockedName, within } from '../src/policy.js';
 import { Store, type JobRecord } from '../src/store.js';
 import { Jobs } from '../src/jobs.js';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, LIMITS } from '../src/config.js';
 import { runProcess, backendEnv } from '../src/process.js';
 import { dockerArgs, Sandbox } from '../src/sandbox.js';
 import { buildSeatbeltProfile, seatbeltArgs, SEATBELT_EXECUTABLE } from '../src/seatbelt-policy.js';
@@ -162,6 +162,64 @@ test('job events are bounded and cursor-paged', async t => {
   const job = await jobs.start('s', 'logs', 'test', {}, async ({ log }) => { for (let i = 0; i < 150; i++) log(String(i)); return null; });
   const first = await jobs.get('s', job.id, 0, 1000); assert.equal(first.events.length, 50); assert.equal(first.next_cursor, 50);
   const second = await jobs.get('s', job.id, first.next_cursor); assert.equal(second.events[0].text, '50'); assert.equal(second.dropped_events, 50);
+});
+
+async function fillJournal(path: string, count: number) {
+  const store = await Store.open(path);
+  for (let i = 0; i < count; i++) {
+    const id = `aaaaaaaa-aaaa-4aaa-aaaa-${String(i).padStart(12, '0')}`;
+    const record: JobRecord = { id, session_id: 's', key: `k${i}`, fingerprint: sha256(`{"input":{},"kind":"test"}`),
+      kind: 'test', status: 'succeeded', created_at: new Date(Date.UTC(2020, 0, 1) + i * 1000).toISOString(),
+      finished_at: new Date(Date.UTC(2020, 0, 1) + i * 1000).toISOString(), events: [], dropped_events: 0, result: null };
+    await store.save('jobs', record);
+  }
+  await store.close();
+}
+
+test('an over-capacity journal still starts, prunes to the retention target and keeps serving', async t => {
+  const { base } = await fixture(t); const path = join(base, 'state');
+  await fillJournal(path, LIMITS.jobs + 5);
+  const store = await Store.open(path); const jobs = new Jobs(store);
+  t.after(async () => { await jobs.shutdown(); await store.close(); });
+  // Loading used to throw 'Journal capacity exceeded', which left no way back:
+  // the runtime that wrote the last record could not start again to prune it.
+  await jobs.init();
+  assert.equal(jobs.stats().retained, LIMITS.jobs);
+  assert.equal(jobs.stats().evicted, 5);
+  assert.equal((await readdir(join(path, 'jobs'))).length, LIMITS.jobs);
+  // The oldest records went first, and their files are gone rather than orphaned.
+  await assert.rejects(() => store.read('jobs', 'aaaaaaaa-aaaa-4aaa-aaaa-000000000000'));
+  let ran = 0;
+  const started = await jobs.start('s', 'fresh-key', 'test', {}, async () => { ran++; return 'ok'; });
+  assert.equal(started.status, 'running');
+  assert.equal(jobs.stats().retained, LIMITS.jobs);
+  assert.equal(jobs.stats().evicted, 6);
+  // The declared tradeoff, asserted rather than assumed: an evicted record
+  // releases its request_id, so the same key runs again instead of replaying.
+  const replayed = await jobs.start('s', 'k0', 'test', {}, async () => { ran++; return 'ran again'; });
+  assert.equal(replayed.status, 'running');
+  assert.equal((await jobs.get('s', replayed.id, 0, 1000)).result, 'ran again');
+  assert.equal(ran, 2);
+});
+
+test('an interrupted journal write leaves no permanent temporary file', async t => {
+  const { base } = await fixture(t); const path = join(base, 'state');
+  const first = await Store.open(path); await first.close();
+  const orphan = join(path, 'jobs', '.aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa.tmp');
+  const operatorFile = join(path, 'jobs', 'notes.txt');
+  // Neither of these can come from randomUUID(): the first is not version 4 and
+  // has the wrong variant nibble, and save() never writes into snapshots.
+  const wrongVersion = join(path, 'jobs', '.00000000-0000-0000-0000-000000000000.tmp');
+  const otherNamespace = join(path, 'snapshots', '.bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.tmp');
+  await writeFile(orphan, 'half-written record'); await writeFile(operatorFile, 'keep me');
+  await writeFile(wrongVersion, 'not ours'); await writeFile(otherNamespace, 'not ours either');
+  const store = await Store.open(path); t.after(() => store.close());
+  await assert.rejects(() => lstat(orphan));
+  // The sweep matches only this writer's own temp naming, in the only two
+  // directories save() writes to, and nothing else.
+  assert.equal(await readFile(operatorFile, 'utf8'), 'keep me');
+  assert.equal(await readFile(wrongVersion, 'utf8'), 'not ours');
+  assert.equal(await readFile(otherNamespace, 'utf8'), 'not ours either');
 });
 
 test('process exit status distinguishes failure, timeout and cancellation', async () => {

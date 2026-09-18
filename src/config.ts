@@ -29,6 +29,8 @@ export interface Config {
   nodeBinary?: string;
   asideBinary: string;
   asidePermission: 'guard' | 'full-access';
+  /** Stop the Aside session a runtime-owned subagent run created. */
+  asideReapSessions: boolean;
   /** Optional CodexClaw payload entry invoked by the privileged native adapter. */
   codexclawEntry?: string;
 }
@@ -147,6 +149,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: strin
     nodeBinary,
     asideBinary: env.CHAT2LOCAL_ASIDE_BINARY || 'aside',
     asidePermission: nativePermission(env.CHAT2LOCAL_ASIDE_PERMISSION),
+    asideReapSessions: enabled(env, 'CHAT2LOCAL_ASIDE_REAP_SESSIONS'),
     codexclawEntry,
   };
 }

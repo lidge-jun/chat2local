@@ -104,6 +104,13 @@ export CHAT2LOCAL_ASIDE_BINARY=/absolute/path/to/aside
 
 **중요:** Aside 어댑터는 사용자 계정의 호스트 CLI를 실행한다. Docker 코드 워커와 달리 호스트·브라우저 권한을 갖고 있고, 파일 도구의 워크스페이스 제한이 Aside 자체의 기능을 격리하지는 않는다. 개인 사용 편의를 위해 기본적으로 켜져 있으므로, 필요 없는 환경에서는 `CHAT2LOCAL_ALLOW_ASIDE=0`으로 끈다. 서브에이전트 권한을 줄이려면 `CHAT2LOCAL_ASIDE_PERMISSION=guard`를 지정한다. 모든 Aside 호출은 직렬 실행되어 같은 브라우저를 동시에 조작하는 충돌을 줄인다. CLI 자체의 계정·호스트·네이티브 옵션은 `aside_native`의 argv로 그대로 전달할 수 있다.
 
+`spawn_subagent`가 만든 Aside 세션은 실행이 끝나면 런타임이 `aside session stop`으로 닫는다. CLI가 끝나도 세션은 데몬에 남기 때문이다. argv를 모델이 쓰는 `aside_native`·`aside_repl`은 닫지 않는다. 세션을 나중에 이어서 쓰고 싶으면 `CHAT2LOCAL_ASIDE_REAP_SESSIONS=0`으로 끈다. 판단 근거와 한계는 [보안 문서](docs/security.md)에 적어 두었다.
+
+```bash
+# 기본값은 1이다. 세션을 남겨 두려면 0을 쓴다.
+export CHAT2LOCAL_ASIDE_REAP_SESSIONS=1
+```
+
 ## 2. ChatGPT 연결
 
 터널 ID와 런타임 키는 운영자가 OpenAI의 현재 관리 화면에서 준비한다. 키를 채팅에 붙이거나 도구 인수로 보내지 않는다. 기존의 임의 바이너리 다운로드·quarantine 해제·launchd 자동 등록은 제거했다. 공식 tunnel-client의 설치와 프로필 생성 절차를 사용한다.
