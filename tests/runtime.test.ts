@@ -274,6 +274,31 @@ test('retention skips a session with a call in flight, not only one with a runni
   assert.ok(internals.sessions.has(session_id));
 });
 
+test('a session is unresolvable the moment retention retires it, not when the unlink lands', async t => {
+  // The window this closes: a call that resolved the session between the guard
+  // check and the journal unlink used to register a job against a record already
+  // being deleted. Retirement is synchronous now, so the victim is gone before
+  // pruneSessions yields. Reverting to await-then-delete makes the call below
+  // succeed instead of throwing.
+  const { runtime, session_id } = await fixture(t);
+  const victim = await runtime.invoke('session_open', { title: 'victim' }) as { session: { id: string } };
+  const keeper = await runtime.invoke('session_open', { title: 'keeper' }) as { session: { id: string } };
+  const internals = runtime as unknown as {
+    sessions: Map<string, { id: string; last_used_at?: string }>;
+    pruneSessions(target: number, exempt?: string): Promise<void>;
+  };
+  internals.sessions.get(victim.session.id)!.last_used_at = '2020-01-01T00:00:00.000Z';
+  internals.sessions.get(keeper.session.id)!.last_used_at = '2020-01-02T00:00:00.000Z';
+  internals.sessions.get(session_id)!.last_used_at = '2020-01-03T00:00:00.000Z';
+  assert.equal(internals.sessions.size, 3);
+  const pending = internals.pruneSessions(2, session_id);
+  await assert.rejects(() => runtime.invoke('capabilities', { session_id: victim.session.id }), /Unknown session/);
+  await pending;
+  assert.equal(internals.sessions.has(victim.session.id), false);
+  assert.ok(internals.sessions.has(keeper.session.id));
+  assert.ok(internals.sessions.has(session_id));
+});
+
 test('model-authored argv is reported but never reaped', async t => {
   const { run, argv } = await asideFixture(t, BANNER_FIRST);
   const result = await run('aside_native', { args: ['exec', 'anything'] });
