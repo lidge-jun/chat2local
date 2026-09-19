@@ -102,7 +102,14 @@ export CHAT2LOCAL_ALLOW_ASIDE=1
 export CHAT2LOCAL_ASIDE_BINARY=/absolute/path/to/aside
 ```
 
-**중요:** Aside 어댑터는 사용자 계정의 호스트 CLI를 실행한다. Docker 코드 워커와 달리 호스트·브라우저 권한을 갖고 있고, 파일 도구의 워크스페이스 제한이 Aside 자체의 기능을 격리하지는 않는다. 개인 사용 편의를 위해 기본적으로 켜져 있으므로, 필요 없는 환경에서는 `CHAT2LOCAL_ALLOW_ASIDE=0`으로 끈다. 서브에이전트 권한을 줄이려면 `CHAT2LOCAL_ASIDE_PERMISSION=guard`를 지정한다. 모든 Aside 호출은 직렬 실행되어 같은 브라우저를 동시에 조작하는 충돌을 줄인다. CLI 자체의 계정·호스트·네이티브 옵션은 `aside_native`의 argv로 그대로 전달할 수 있다.
+**중요:** Aside 어댑터는 사용자 계정의 호스트 CLI를 실행한다. Docker 코드 워커와 달리 호스트·브라우저 권한을 갖고 있고, 파일 도구의 워크스페이스 제한이 Aside 자체의 기능을 격리하지는 않는다. 개인 사용 편의를 위해 기본적으로 켜져 있으므로, 필요 없는 환경에서는 `CHAT2LOCAL_ALLOW_ASIDE=0`으로 끈다. 서브에이전트 권한을 줄이려면 `CHAT2LOCAL_ASIDE_PERMISSION=guard`를 지정한다. CLI 자체의 계정·호스트·네이티브 옵션은 `aside_native`의 argv로 그대로 전달할 수 있다.
+
+특권 어댑터 호출은 어댑터마다 정해진 수만큼 동시에 돈다. 1.4.0까지는 Aside와 CodexClaw가 하나의 대기열을 함께 썼고, 그래서 십 분 걸리는 `spawn_subagent` 한 건이 뒤에 들어온 `aside_native --help`와 `codexclaw_native` 호출을 실행조차 못 하게 붙잡아 두었다. 같이 띄운 서브에이전트 여러 개도 결국 한 개씩 순서대로 돌았다. 지금은 어댑터별로 한도를 따로 두어, Aside 작업이 길어져도 CodexClaw 호출은 기다리지 않는다. 같은 브라우저를 동시에 건드리는 쪽이 더 걱정되면 `CHAT2LOCAL_NATIVE_CONCURRENCY=1`로 예전의 한 번에 하나 방식으로 되돌린다.
+
+```bash
+# 기본값은 4다. 1이면 어댑터마다 한 번에 하나만 실행한다.
+export CHAT2LOCAL_NATIVE_CONCURRENCY=4
+```
 
 `spawn_subagent`가 만든 Aside 세션은 실행이 끝나면 런타임이 `aside session stop`으로 닫는다. CLI가 끝나도 세션은 데몬에 남기 때문이다. argv를 모델이 쓰는 `aside_native`·`aside_repl`은 닫지 않는다. 세션을 나중에 이어서 쓰고 싶으면 `CHAT2LOCAL_ASIDE_REAP_SESSIONS=0`으로 끈다. 판단 근거와 한계는 [보안 문서](docs/security.md)에 적어 두었다.
 

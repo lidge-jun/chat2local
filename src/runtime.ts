@@ -7,6 +7,7 @@ import { Workspace, within, globRegex, PolicyError, sha256 } from './policy.js';
 import { Store, type SessionRecord } from './store.js';
 import { Jobs, CleanupError, type JobContext } from './jobs.js';
 import { Sandbox } from './sandbox.js';
+import { Gate } from './gate.js';
 import { backendEnv, runProcess, type ProcessResult } from './process.js';
 import { INSTRUCTIONS } from './instructions.js';
 import { schemas, type ToolName, batchReads, batchWrites } from './tools.js';
@@ -37,7 +38,14 @@ export class Runtime {
   readonly sandbox: Sandbox;
   private workspaces = new Map<string, Workspace>();
   private sessions = new Map<string, SessionRecord>();
-  private nativeQueue: Promise<unknown> = Promise.resolve();
+  /**
+   * One bounded gate per privileged adapter, never a shared queue.
+   *
+   * Aside and CodexClaw are different external systems; a long agent run on one
+   * must not decide when a call to the other may start.
+   */
+  private readonly asideGate: Gate;
+  private readonly codexclawGate: Gate;
   private sessionQueue: Promise<unknown> = Promise.resolve();
   private evictedSessions = 0;
   /** When each session record was last written, so the throttle cannot starve. */
@@ -47,6 +55,7 @@ export class Runtime {
 
   private constructor(readonly config: Config, readonly workspace: Workspace, readonly store: Store) {
     this.jobs = new Jobs(store); this.sandbox = new Sandbox(config);
+    this.asideGate = new Gate(config.nativeConcurrency); this.codexclawGate = new Gate(config.nativeConcurrency);
   }
   static async create(config: Config) {
     const workspace = await Workspace.create(config.workspace, config.allowWrite);
@@ -166,6 +175,7 @@ export class Runtime {
       codexclaw_native_enabled: Boolean(this.config.allowWrite && this.config.nodeBinary && this.config.codexclawEntry),
       codexclaw_entry: this.config.codexclawEntry || null,
       codexclaw_native_is_sandboxed: false, operator_mode: 'personal',
+      native_concurrency: this.config.nativeConcurrency,
       native_aside_reaps_sessions: this.config.allowAside && this.config.asideReapSessions,
       job_journal: this.jobs.stats(),
       session_journal: { retained: this.sessions.size, evicted: this.evictedSessions, capacity: LIMITS.sessions },
@@ -323,7 +333,7 @@ export class Runtime {
 
   private async batchCall(sessionId: string, name: string, input: unknown, readOnly: boolean, ctx: JobContext): Promise<unknown> {
     const names = [...batchReads, ...(!readOnly ? batchWrites.filter(t => t === 'write_file' ? this.config.allowWrite : t === 'aside_native' ? this.config.allowAside : this.config.allowWrite && Boolean(this.config.codexclawEntry)) : [])];
-    if (name === '$list') return names.map(n => ({ name: n, description: n === 'aside_native' ? 'Privileged host Aside CLI argv; serial execution' : n === 'codexclaw_native' ? 'Privileged CodexClaw cxc argv in the session project; serial execution' : 'Use the corresponding MCP tool schema without session_id' }));
+    if (name === '$list') return names.map(n => ({ name: n, description: n === 'aside_native' ? `Privileged host Aside CLI argv; up to ${this.config.nativeConcurrency} in flight` : n === 'codexclaw_native' ? `Privileged CodexClaw cxc argv in the session project; up to ${this.config.nativeConcurrency} in flight` : 'Use the corresponding MCP tool schema without session_id' }));
     if (!(names as readonly string[]).includes(name)) throw new PolicyError(`Tool unavailable in this batch: ${name}`);
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Tool arguments must be an object');
     if ('session_id' in input || 'request_id' in input) throw new PolicyError('Session and request identity are supplied by the broker');
@@ -340,7 +350,7 @@ export class Runtime {
   }
 
   private codexclaw(args: string[], timeout: number, workspace: Workspace, ctx: JobContext) {
-    const op = this.nativeQueue.then(async () => {
+    return this.codexclawGate.run(async () => {
       if (!this.config.allowWrite) throw new PolicyError('CodexClaw native adapter disabled');
       const entry = this.config.codexclawEntry;
       if (!this.config.nodeBinary || !entry) throw new PolicyError('CodexClaw native adapter is not configured');
@@ -354,12 +364,11 @@ export class Runtime {
         { cwd: workspace.root, env: backendEnv(true), timeout, signal: ctx.signal });
       if (result.timed_out || result.cancelled || result.output_limited || result.exit_code !== 0) throw new Error('CodexClaw failed: '+JSON.stringify(result));
       return result;
-    });
-    this.nativeQueue = op.catch(() => {}); return op;
+    }, ctx.signal);
   }
 
   private native(args: string[], timeout: number, workspace: Workspace, ctx: JobContext, owned: boolean) {
-    const op = this.nativeQueue.then(async () => {
+    return this.asideGate.run(async () => {
       if (!this.config.allowAside) throw new PolicyError('Privileged Aside adapter disabled');
       if (ctx.signal.aborted) throw new Error('Cancelled before native execution');
       // The banner is observed as it arrives, because a rejected runProcess never
@@ -397,8 +406,7 @@ export class Runtime {
           + `Stop it manually before reusing this request_id.${ranBadly ? ' The run itself also failed.' : ''}`, payload);
       if (ranBadly) throw new Error(`Aside failed: ${JSON.stringify(payload)}`);
       return payload;
-    });
-    this.nativeQueue = op.catch(() => {}); return op;
+    }, ctx.signal);
   }
 
   /**
@@ -406,7 +414,9 @@ export class Runtime {
    *
    * Deliberately runs without the job's AbortSignal and on its own timeout: a
    * cancelled job is exactly the case where the session most needs releasing.
-   * Already serialized, because every caller is inside the native queue.
+   * It runs inside the caller's own gate slot, on the id that caller's process
+   * announced on its first stderr line, so a concurrent run can never stop a
+   * session it does not own.
    */
   private async stopSession(id: string): Promise<SessionReap> {
     try {
@@ -424,5 +434,7 @@ export class Runtime {
     }
   }
 
-  async close() { await this.jobs.shutdown(); await this.nativeQueue; await this.sessionQueue; await this.store.close(); }
+  // jobs.shutdown() aborts first, which is what releases a call still waiting for
+  // a gate slot; draining then waits only for children that actually started.
+  async close() { await this.jobs.shutdown(); await this.asideGate.drain(); await this.codexclawGate.drain(); await this.sessionQueue; await this.store.close(); }
 }
