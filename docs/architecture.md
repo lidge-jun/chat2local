@@ -9,7 +9,7 @@ ChatGPT가 이미 내린 판단을 또 다른 에이전트에게 재전달하는
 | `bin/mcp.ts` | bounded stdio 입력, 시작·종료·미완료 요청 drain |
 | `src/server.ts` | MCP SDK 등록, 설명·annotation·이미지 결과 |
 | `src/tools.ts` | MCP와 broker가 공유하는 Zod 스키마 |
-| `src/runtime.ts` | 세션, 도구 라우팅, 제한된 batch API, Aside 직렬화 |
+| `src/runtime.ts` | 세션, 도구 라우팅, 제한된 batch API, 어댑터별 동시 실행 게이트 |
 | `src/policy.ts` | 소스 경로 제한, 파일 해시, compare-and-swap, 스냅샷 |
 | `src/store.ts` | private JSON 기록과 단일 프로세스 잠금 |
 | `src/jobs.ts` | 중복 요청 방지, 조회·취소·중단 기록 |

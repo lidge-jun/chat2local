@@ -23,9 +23,32 @@ export function blockedName(name: string): boolean {
 }
 
 export class Workspace {
-  // Serialize edits across sessions, including overlapping workspace roots.
-  private static queue: Promise<unknown> = Promise.resolve();
+  /**
+   * One lock per target file, shared across sessions and overlapping roots.
+   *
+   * A single global queue made every edit wait behind every other edit, so a
+   * hundred sessions touching a hundred different files took a hundred turns for
+   * no correctness gain. What compare-and-swap actually needs is that two
+   * writers to the SAME file cannot interleave their read, verify and rename.
+   * Keys are resolved absolute paths, so two sessions reaching one file through
+   * different roots still contend on a single lock.
+   */
+  private static locks = new Map<string, Promise<unknown>>();
   private constructor(readonly root: string, readonly writable: boolean) {}
+
+  private static lock<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = Workspace.locks.get(key) ?? Promise.resolve();
+    const operation = previous.then(task);
+    const settled = operation.then(() => {}, () => {});
+    Workspace.locks.set(key, settled);
+    // Release the key once this call is the tail, so the map holds live writers
+    // rather than every file the runtime has ever touched.
+    void settled.then(() => { if (Workspace.locks.get(key) === settled) Workspace.locks.delete(key); });
+    return operation;
+  }
+
+  /** Files with a write in flight or queued behind one. Introspection only. */
+  static writeLocks(): number { return Workspace.locks.size; }
 
   static async create(root: string, writable = false): Promise<Workspace> {
     const canonical = await realpath(root);
@@ -93,9 +116,14 @@ export class Workspace {
       next_offset: end < data.length ? end : null };
   }
 
-  /** Serialized compare-and-swap edits; callers must read and supply the current hash. */
+  /** Compare-and-swap edits, serialized per target file; callers must read and supply the current hash. */
   write(path: string, content: string, expected: string, signal?: AbortSignal) {
-    const operation = Workspace.queue.then(async () => {
+    // The key is the resolved target, computed without I/O so the lock is taken
+    // during the call itself. That keeps issue order: two writers to one file
+    // apply in the order they were called, exactly as the old global queue did.
+    // Resolution normalizes spelling, and two roots that reach one file produce
+    // one key, so aliases contend rather than racing. Validation stays inside.
+    return Workspace.lock(resolve(this.root, path), async () => {
       if (signal?.aborted) throw new PolicyError('Write cancelled before execution');
       if (!this.writable) throw new PolicyError('Writes disabled by operator; set CHAT2LOCAL_ALLOW_WRITE=1 to re-enable');
       if (Buffer.byteLength(content) > LIMITS.fileBytes) throw new PolicyError('Write exceeds file limit');
@@ -122,8 +150,6 @@ export class Workspace {
       finally { await unlink(tmp).catch(() => {}); }
       return { path, previous_sha256: expected, sha256: sha256(content), bytes: Buffer.byteLength(content) };
     });
-    Workspace.queue = operation.catch(() => {});
-    return operation;
   }
 
   async list(path = '.', recursive = false) {

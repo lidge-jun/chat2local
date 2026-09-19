@@ -111,6 +111,18 @@ export CHAT2LOCAL_ASIDE_BINARY=/absolute/path/to/aside
 export CHAT2LOCAL_NATIVE_CONCURRENCY=4
 ```
 
+세션 쪽도 같은 문제를 갖고 있었다. 모든 파일 쓰기가 하나의 전역 대기열을 지나갔기 때문에, 서로 다른 파일을 고치는 세션 백 개가 백 번의 순서를 기다렸다. 지금은 잠금을 **대상 파일 단위**로 잡는다. 서로 다른 파일을 고치는 세션들은 서로를 기다리지 않고, 같은 파일을 고치는 세션들만 순서를 지킨다. 저널도 기록 하나마다 따로 쓰므로 세션 백 개가 동시에 움직여도 fsync가 한 줄로 늘어서지 않는다. 세션 보관량은 512개다.
+
+같은 파일을 여러 세션이 동시에 고치는 것은 여전히 되지 않고, 앞으로도 그럴 예정이다. `write_file`은 읽을 때 받은 해시를 함께 보내야 하는 compare-and-swap이라, 같은 해시를 들고 온 두 번째 세션은 `Conflict: file changed; read again before writing`을 받는다. 이걸 "되게" 만들면 나중에 쓴 쪽이 앞선 편집을 말없이 덮어쓴다는 뜻이다. 한 파일을 여러 세션이 나눠 고치려면 읽기와 쓰기를 짧게 가져가고 충돌이 나면 다시 읽는 편이 맞다.
+
+작업(`code_mode`, `exec_command`, 네이티브 어댑터)은 파일 편집과 달리 실제 OS 프로세스를 띄우고, `exec_command`는 작업마다 워크스페이스 스냅샷까지 복사한다. 그래서 동시 실행 기본값은 16이고 필요하면 올린다. 이건 자원 판단이지 정확성 문제가 아니다.
+
+```bash
+# 동시에 도는 작업 수(기본 16, 최대 128)와 세션 보관량(기본 512).
+export CHAT2LOCAL_MAX_ACTIVE_JOBS=100
+export CHAT2LOCAL_MAX_SESSIONS=512
+```
+
 `spawn_subagent`가 만든 Aside 세션은 실행이 끝나면 런타임이 `aside session stop`으로 닫는다. CLI가 끝나도 세션은 데몬에 남기 때문이다. argv를 모델이 쓰는 `aside_native`·`aside_repl`은 닫지 않는다. 세션을 나중에 이어서 쓰고 싶으면 `CHAT2LOCAL_ASIDE_REAP_SESSIONS=0`으로 끈다. 판단 근거와 한계는 [보안 문서](docs/security.md)에 적어 두었다.
 
 ```bash
