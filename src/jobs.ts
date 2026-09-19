@@ -30,7 +30,8 @@ export class Jobs {
   private reservation: Promise<unknown> = Promise.resolve();
   private stopping = false;
   private evicted = 0;
-  constructor(private store: Store, private readonly maxActive = LIMITS.activeJobs) {}
+  // Annotated, because LIMITS is frozen and infers the literal type of its default.
+  constructor(private store: Store, private readonly maxActive: number = LIMITS.activeJobs) {}
 
   async init() {
     // Sorted on load so insertion order — and therefore eviction order — is the
