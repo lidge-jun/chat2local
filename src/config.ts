@@ -31,6 +31,8 @@ export interface Config {
   asidePermission: 'guard' | 'full-access';
   /** Stop the Aside session a runtime-owned subagent run created. */
   asideReapSessions: boolean;
+  /** Privileged host calls allowed in flight, per adapter. */
+  nativeConcurrency: number;
   /** Optional CodexClaw payload entry invoked by the privileged native adapter. */
   codexclawEntry?: string;
 }
@@ -47,6 +49,22 @@ function nativePermission(value: string | undefined): 'guard' | 'full-access' {
   if (value === undefined || value === 'full-access') return 'full-access';
   if (value === 'guard') return 'guard';
   throw new Error('CHAT2LOCAL_ASIDE_PERMISSION must be guard or full-access');
+}
+
+/**
+ * How many privileged host calls each adapter may have in flight.
+ *
+ * The default is bounded concurrency, because a single shared queue made the
+ * slowest call the rate limit for every other one. An operator who wants only
+ * one host CLI driving the browser at a time sets `1` and gets exactly the
+ * original serial behaviour back.
+ */
+function nativeSlots(value: string | undefined): number {
+  if (value === undefined) return LIMITS.nativeConcurrency;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > LIMITS.concurrency)
+    throw new Error(`CHAT2LOCAL_NATIVE_CONCURRENCY must be an integer from 1 to ${LIMITS.concurrency}`);
+  return parsed;
 }
 
 /** Resolve an executable on PATH without spawning a shell. */
@@ -150,6 +168,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: strin
     asideBinary: env.CHAT2LOCAL_ASIDE_BINARY || 'aside',
     asidePermission: nativePermission(env.CHAT2LOCAL_ASIDE_PERMISSION),
     asideReapSessions: enabled(env, 'CHAT2LOCAL_ASIDE_REAP_SESSIONS'),
+    nativeConcurrency: nativeSlots(env.CHAT2LOCAL_NATIVE_CONCURRENCY),
     codexclawEntry,
   };
 }
@@ -162,6 +181,14 @@ export const LIMITS = Object.freeze({
   toolCalls: 128,
   concurrency: 8,
   activeJobs: 4,
+  /**
+   * Privileged host calls in flight per adapter.
+   *
+   * Matches activeJobs so every admitted job can actually reach its adapter,
+   * while a code-mode worker issuing `concurrency` broker calls at once still
+   * cannot multiply into an unbounded number of unsandboxed host processes.
+   */
+  nativeConcurrency: 4,
   jobs: 512,
   sessions: 128,
   walkEntries: 5000,

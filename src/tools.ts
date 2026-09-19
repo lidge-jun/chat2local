@@ -48,7 +48,7 @@ export const descriptions: Record<ToolName, string> = {
   code_mode_read: 'Run read-only tool orchestration JavaScript in a disposable, network-disabled OS sandbox (macOS Seatbelt or Docker). No in-process JS fallback. Returns job_id; poll job_get.',
   code_mode: 'Run tool orchestration JavaScript with operator-enabled write/native capabilities. May modify files or act externally; obtain approval for the whole batch. Returns job_id.',
   exec_command: 'Run a shell command ONLY inside the OS sandbox on a filtered source snapshot. No unsandboxed shell, network, secrets or live writable project. No automatic copy-back. Returns job_id.',
-  aside_native: 'Invoke exact Aside CLI argv without shell interpolation. This is a PRIVILEGED HOST adapter, not a sandbox. Enabled by default for personal use; serializes all Aside calls. Returns job_id.',
+  aside_native: 'Invoke exact Aside CLI argv without shell interpolation. This is a PRIVILEGED HOST adapter, not a sandbox. Enabled by default for personal use; Aside calls run concurrently up to a fixed ceiling and never queue behind CodexClaw. Returns job_id.',
   codexclaw_native: 'Invoke the configured CodexClaw cxc payload with exact argv in the session project. This is a PRIVILEGED HOST adapter and may mutate CodexClaw/project state. Returns job_id.',
   aside_repl: 'Use the optional privileged Aside adapter for direct browser JavaScript, retaining account/host options. Prefer direct calls for visual or single-step tasks. Returns job_id.',
   spawn_subagent: 'Optionally delegate an independent task to Aside exec with the operator-selected permission (personal default: full-access). Not the default coding route. Honors the operator disable switch. Returns job_id.',
