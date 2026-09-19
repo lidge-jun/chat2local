@@ -54,7 +54,7 @@ export class Runtime {
   private inFlight = new Map<string, number>();
 
   private constructor(readonly config: Config, readonly workspace: Workspace, readonly store: Store) {
-    this.jobs = new Jobs(store); this.sandbox = new Sandbox(config);
+    this.jobs = new Jobs(store, config.maxActiveJobs); this.sandbox = new Sandbox(config);
     this.asideGate = new Gate(config.nativeConcurrency); this.codexclawGate = new Gate(config.nativeConcurrency);
   }
   static async create(config: Config) {
@@ -67,7 +67,7 @@ export class Runtime {
       await runtime.jobs.init();
       // The loader no longer refuses an over-capacity directory, so retention has
       // to run at startup too, not only when the next session is opened.
-      await runtime.pruneSessions(LIMITS.sessions);
+      await runtime.pruneSessions(config.maxSessions);
       return runtime;
     } catch (e) { await store.close(); throw e; }
   }
@@ -176,9 +176,10 @@ export class Runtime {
       codexclaw_entry: this.config.codexclawEntry || null,
       codexclaw_native_is_sandboxed: false, operator_mode: 'personal',
       native_concurrency: this.config.nativeConcurrency,
+      max_active_jobs: this.config.maxActiveJobs,
       native_aside_reaps_sessions: this.config.allowAside && this.config.asideReapSessions,
       job_journal: this.jobs.stats(),
-      session_journal: { retained: this.sessions.size, evicted: this.evictedSessions, capacity: LIMITS.sessions },
+      session_journal: { retained: this.sessions.size, evicted: this.evictedSessions, capacity: this.config.maxSessions },
       isolated_commands: backend === 'seatbelt'
         ? 'Filtered snapshot copied into a scratch directory and run under macOS Seatbelt: no network, no access to the live project, no copy-back. Host tools on PATH remain visible and rlimits bound an honest runaway, not a determined attacker.'
         : 'Filtered snapshot, network disabled, no copy-back; dependencies must already be in the image',
@@ -210,7 +211,7 @@ export class Runtime {
     // Capacity is a target, not a wall. When every existing session is protected
     // the journal holds one more for now and the next open tries again;
     // protection is transient, while refusing to open a session is not.
-    if (this.sessions.size > LIMITS.sessions) await this.pruneSessions(LIMITS.sessions, record.id);
+    if (this.sessions.size > this.config.maxSessions) await this.pruneSessions(this.config.maxSessions, record.id);
     return { session: record, ...this.capabilities() };
   }
 

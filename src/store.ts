@@ -22,9 +22,32 @@ export function validId(id: string): string {
 
 /** Private, single-operator journal. The lock prevents concurrent runtime writers. */
 export class Store {
-  private serial: Promise<unknown> = Promise.resolve();
+  /**
+   * One chain per record, not one for the whole journal.
+   *
+   * Two records are two separate files written through separate temporaries and
+   * an atomic rename, so ordering only has to hold for writes to the same id.
+   * A single chain made every fsync wait for every other fsync, which is what a
+   * hundred concurrent sessions would have queued on.
+   */
+  private serial = new Map<string, Promise<unknown>>();
+  /** Every unfinished write, so close() still waits for all of them. */
+  private pending = new Set<Promise<unknown>>();
   private closed = false;
   private constructor(readonly root: string) {}
+
+  private chain<T>(kind: 'sessions' | 'jobs', id: string, task: () => Promise<T>): Promise<T> {
+    const key = `${kind}/${id}`;
+    const previous = this.serial.get(key) ?? Promise.resolve();
+    const operation = previous.then(task);
+    const settled = operation.then(() => {}, () => {});
+    this.serial.set(key, settled); this.pending.add(settled);
+    void settled.then(() => {
+      this.pending.delete(settled);
+      if (this.serial.get(key) === settled) this.serial.delete(key);
+    });
+    return operation;
+  }
 
   static async open(path: string): Promise<Store> {
     const root = resolve(path);
@@ -104,7 +127,7 @@ export class Store {
   save(kind: 'sessions' | 'jobs', record: SessionRecord | JobRecord): Promise<void> {
     const json = JSON.stringify(record);
     if (Buffer.byteLength(json) > 2 * LIMITS.resultBytes) return Promise.reject(new Error('Journal record too large'));
-    const op = this.serial.then(async () => {
+    return this.chain(kind, record.id, async () => {
       if (this.closed) throw new Error('Store closed');
       const path = join(this.root, kind, `${validId(record.id)}.json`);
       const temp = join(dirname(path), `.${randomUUID()}.tmp`);
@@ -112,19 +135,15 @@ export class Store {
       try { await h.writeFile(json); await h.sync(); await h.close(); await rename(temp, path); }
       finally { await h.close().catch(() => {}); await unlink(temp).catch(() => {}); }
     });
-    this.serial = op.catch(() => {});
-    return op;
   }
 
   /** Deleting a record is how retention works; a missing file is already the goal. */
   delete(kind: 'sessions' | 'jobs', id: string): Promise<void> {
-    const op = this.serial.then(async () => {
+    return this.chain(kind, id, async () => {
       if (this.closed) throw new Error('Store closed');
       await unlink(join(this.root, kind, `${validId(id)}.json`))
         .catch(e => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; });
     });
-    this.serial = op.catch(() => {});
-    return op;
   }
 
   /**
@@ -142,7 +161,10 @@ export class Store {
   }
 
   async close() {
-    await this.serial; if (this.closed) return;
+    // Drained in a loop: a write can still be queued behind one this call is
+    // already waiting on.
+    while (this.pending.size) await Promise.all([...this.pending]);
+    if (this.closed) return;
     this.closed = true; await unlink(join(this.root, 'runtime.lock')).catch(e => { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; });
   }
 }

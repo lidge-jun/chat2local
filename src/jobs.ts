@@ -30,7 +30,8 @@ export class Jobs {
   private reservation: Promise<unknown> = Promise.resolve();
   private stopping = false;
   private evicted = 0;
-  constructor(private store: Store) {}
+  // Annotated, because LIMITS is frozen and infers the literal type of its default.
+  constructor(private store: Store, private readonly maxActive: number = LIMITS.activeJobs) {}
 
   async init() {
     // Sorted on load so insertion order — and therefore eviction order — is the
@@ -72,7 +73,7 @@ export class Jobs {
     }
   }
 
-  stats() { return { retained: this.records.size, evicted: this.evicted, capacity: LIMITS.jobs }; }
+  stats() { return { retained: this.records.size, evicted: this.evicted, capacity: LIMITS.jobs, active_limit: this.maxActive }; }
 
   /** Session retention must not evict a session whose work is still in flight. */
   hasRunning(session: string): boolean {
@@ -89,11 +90,11 @@ export class Jobs {
         if (previous.fingerprint !== fingerprint) throw new Error('request_id already used for different input');
         return this.summary(previous);
       }
-      if (this.running.size >= LIMITS.activeJobs) throw new Error('Active job limit reached; finish or cancel a job first');
+      if (this.running.size >= this.maxActive) throw new Error(`Active job limit of ${this.maxActive} reached; finish or cancel a job, or raise CHAT2LOCAL_MAX_ACTIVE_JOBS`);
       // Pruning runs after the idempotency lookup above, so a key a caller is
       // retrying right now is never evicted out from under it.
       await this.prune(LIMITS.jobs - 1);
-      // Defensive only: admission already caps active jobs at LIMITS.activeJobs
+      // Defensive only: admission already caps active jobs at maxActive
       // and init() rewrites persisted 'running' records to 'interrupted', so the
       // public API cannot reach a journal that is full of running jobs.
       if (this.records.size >= LIMITS.jobs) throw new Error('Job journal full of running jobs; cancel one before starting another');

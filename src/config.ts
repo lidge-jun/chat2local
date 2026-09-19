@@ -33,6 +33,10 @@ export interface Config {
   asideReapSessions: boolean;
   /** Privileged host calls allowed in flight, per adapter. */
   nativeConcurrency: number;
+  /** Jobs allowed to run at once, across every session. */
+  maxActiveJobs: number;
+  /** Task sessions retained before least-recently-used eviction. */
+  maxSessions: number;
   /** Optional CodexClaw payload entry invoked by the privileged native adapter. */
   codexclawEntry?: string;
 }
@@ -52,18 +56,18 @@ function nativePermission(value: string | undefined): 'guard' | 'full-access' {
 }
 
 /**
- * How many privileged host calls each adapter may have in flight.
+ * An operator-tunable ceiling, validated rather than silently clamped.
  *
- * The default is bounded concurrency, because a single shared queue made the
- * slowest call the rate limit for every other one. An operator who wants only
- * one host CLI driving the browser at a time sets `1` and gets exactly the
- * original serial behaviour back.
+ * A value outside the supported range is a configuration mistake worth failing
+ * on, the same way an ambiguous permission value is: quietly running at some
+ * other number than the operator asked for is how a capacity limit stops
+ * meaning anything.
  */
-function nativeSlots(value: string | undefined): number {
-  if (value === undefined) return LIMITS.nativeConcurrency;
+function ceiling(key: string, value: string | undefined, fallback: number, max: number): number {
+  if (value === undefined) return fallback;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > LIMITS.concurrency)
-    throw new Error(`CHAT2LOCAL_NATIVE_CONCURRENCY must be an integer from 1 to ${LIMITS.concurrency}`);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max)
+    throw new Error(`${key} must be an integer from 1 to ${max}`);
   return parsed;
 }
 
@@ -168,7 +172,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, platform: strin
     asideBinary: env.CHAT2LOCAL_ASIDE_BINARY || 'aside',
     asidePermission: nativePermission(env.CHAT2LOCAL_ASIDE_PERMISSION),
     asideReapSessions: enabled(env, 'CHAT2LOCAL_ASIDE_REAP_SESSIONS'),
-    nativeConcurrency: nativeSlots(env.CHAT2LOCAL_NATIVE_CONCURRENCY),
+    nativeConcurrency: ceiling('CHAT2LOCAL_NATIVE_CONCURRENCY', env.CHAT2LOCAL_NATIVE_CONCURRENCY, LIMITS.nativeConcurrency, LIMITS.concurrency),
+    maxActiveJobs: ceiling('CHAT2LOCAL_MAX_ACTIVE_JOBS', env.CHAT2LOCAL_MAX_ACTIVE_JOBS, LIMITS.activeJobs, LIMITS.activeJobsCeiling),
+    maxSessions: ceiling('CHAT2LOCAL_MAX_SESSIONS', env.CHAT2LOCAL_MAX_SESSIONS, LIMITS.sessions, LIMITS.sessions),
     codexclawEntry,
   };
 }
@@ -180,17 +186,27 @@ export const LIMITS = Object.freeze({
   processBytes: 1024 * 1024,
   toolCalls: 128,
   concurrency: 8,
-  activeJobs: 4,
+  /**
+   * Default jobs running at once, across every session.
+   *
+   * Each one is a real OS process, and `exec_command` also copies a filtered
+   * workspace snapshot per job, so this is a resource decision rather than a
+   * correctness one. Raise it with CHAT2LOCAL_MAX_ACTIVE_JOBS when many sessions
+   * genuinely need to run work at the same time.
+   */
+  activeJobs: 16,
+  /** Highest CHAT2LOCAL_MAX_ACTIVE_JOBS an operator may ask for. */
+  activeJobsCeiling: 128,
   /**
    * Privileged host calls in flight per adapter.
    *
-   * Matches activeJobs so every admitted job can actually reach its adapter,
-   * while a code-mode worker issuing `concurrency` broker calls at once still
-   * cannot multiply into an unbounded number of unsandboxed host processes.
+   * Deliberately smaller than activeJobs: these run unsandboxed with host
+   * privileges, so a code-mode worker issuing `concurrency` broker calls at once
+   * cannot multiply into an unbounded number of host processes.
    */
   nativeConcurrency: 4,
   jobs: 512,
-  sessions: 128,
+  sessions: 512,
   walkEntries: 5000,
   snapshotBytes: 32 * 1024 * 1024,
 });

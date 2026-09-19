@@ -4,14 +4,14 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, rename , realpath } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Runtime } from '../src/runtime.js';
-import { loadConfig, LIMITS } from '../src/config.js';
+import { loadConfig, type Config } from '../src/config.js';
 import { schemas } from '../src/tools.js';
 import { setup, PROJECT_ROOT } from '../bin/setup.js';
 
-async function fixture(t: any, writable = false) {
+async function fixture(t: any, writable = false, overrides: Partial<Config> = {}) {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'chat2local-runtime-')));
   const root = join(base, 'project'); await mkdir(root); await writeFile(join(root, 'a.ts'), 'const answer = 42;\n');
-  const runtime = await Runtime.create({ ...loadConfig({}), workspace: root, stateDir: join(base, 'state'), allowWrite: writable, allowAside: false });
+  const runtime = await Runtime.create({ ...loadConfig({}), workspace: root, stateDir: join(base, 'state'), allowWrite: writable, allowAside: false, ...overrides });
   t.after(async () => { await runtime.close(); await rm(base, { recursive: true, force: true }); });
   const open = await runtime.invoke('session_open', {}) as any;
   return { runtime, root, base, session_id: open.session.id };
@@ -193,18 +193,21 @@ printf 'agent output\\n'`;
 });
 
 test('session retention evicts the coldest session and never one with work in flight', async t => {
-  const { runtime, session_id } = await fixture(t);
+  // A configured capacity, not the production default: this test is about which
+  // record retention picks, and opening hundreds of sessions proves nothing extra.
+  const capacity = 8;
+  const { runtime, session_id } = await fixture(t, false, { maxSessions: capacity });
   const job = await runtime.jobs.start(session_id, 'held', 'fixture', {}, async ({ signal }) => {
     await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
     return 'stopped';
   });
   const opened: string[] = [];
-  for (let i = 0; i < LIMITS.sessions; i++) {
+  for (let i = 0; i < capacity; i++) {
     const open = await runtime.invoke('session_open', { title: `session ${i}` }) as { session: { id: string } };
     opened.push(open.session.id);
   }
   const listed = await runtime.invoke('session_list', {}) as { sessions: Array<{ id: string }> };
-  assert.equal(listed.sessions.length, LIMITS.sessions);
+  assert.equal(listed.sessions.length, capacity);
   // The oldest session is the coldest, but it owns a running job, so the next
   // coldest was evicted instead and the job stays observable and cancellable.
   assert.ok(listed.sessions.some(s => s.id === session_id));

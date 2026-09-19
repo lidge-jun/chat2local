@@ -1,6 +1,6 @@
 {
   "name": "chat2local",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Chat-first local workbench: scoped file tools, disposable code-mode workers, resumable jobs and optional Aside",
   "type": "module",
   "scripts": {
